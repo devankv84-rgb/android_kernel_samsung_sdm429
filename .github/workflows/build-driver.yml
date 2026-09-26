@@ -31,7 +31,7 @@ jobs:
     - name: Clone and Patch rtl8812au Driver
       run: |
         cd ..
-        git clone https://github.com/aircrack-ng/rtl8812au.git
+        git clone https://github.com/astsam/rtl8812au.git
         cd rtl8812au
         # Edit the driver Makefile using sed to change architecture targets to ARM64
         sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/g' Makefile
