@@ -29,18 +29,17 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 #   gcc-arm-linux-gnueabi and setting CROSS_COMPILE_ARM32.
 # v3 fixed: "ld: cannot represent machine `arm'" (vdso32 link failure) by
 #   switching from apt's cross-toolchain to prebuilt AOSP GCC 4.9 toolchains.
-# v7 added V=1 verbose build output to capture the exact dtc command line.
-# v8 (this version): the V=1 log confirmed it precisely:
-#   "./scripts/dtc/dtc: invalid option -- '@'"
-# Root cause CONFIRMED: this kernel's bundled scripts/dtc/dtc.c predates the
-# "-@" flag (used to generate phandle symbols for device-tree overlay
-# support), but scripts/Makefile.lib unconditionally passes "-@" anyway —
-# a genuine mismatch inside the kernel source between two files that were
-# never updated together.
-# Fix: strip " -@" from scripts/Makefile.lib before the build. This kernel
-# doesn't build with working overlay symbol support either way (its dtc
-# can't produce them), so nothing is lost — we're just stopping the build
-# from passing a flag its own tools can't handle.
+# v8 attempted a fix targeting only scripts/Makefile.lib and the qcom dts
+#   Makefile for the "-@" flag — but the SAME error recurred on the next
+#   build, meaning -@ is set somewhere else in the tree we didn't check.
+# v9 (this version): broadens the search to every Makefile under scripts/
+#   and arch/arm64 (most likely culprit: arch/arm64/Makefile itself, a
+#   common place for DTC_FLAGS in this kernel generation), but only edits
+#   lines that actually contain "DTC_FLAGS" to avoid collateral damage. It
+#   also prints before/after greps so the log makes clear whether it found
+#   and fixed the real source this time, or whether the flag is being added
+#   some other way entirely (in which case the next V=1 log's dtc command
+#   line is needed to pin it down for certain).
 # ---------------------------------------------------------------------------
 
 on:
@@ -56,7 +55,7 @@ on:
 
 env:
   DEVICE_CODENAME: gtowifi                      # Samsung Galaxy Tab A 8.0 (2019)
-  DEFCONFIG: lineageos_gtowifi_defconfig             # <<< confirm against arch/arm64/configs/ in the repo >>>
+  DEFCONFIG: lineageos_gtowifi_defconfig        # confirmed by user
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
   KERNEL_BRANCH: lineage-22.2                   # <<< confirm this branch exists; fall back if not pushed yet >>>
   NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
@@ -162,17 +161,33 @@ jobs:
           echo "ARCH=arm64" >> "$GITHUB_ENV"
           echo "${{ env.TOOLCHAIN_BIN }}" >> "$GITHUB_PATH"
 
-      - name: Strip unsupported dtc "-@" flag from Makefile.lib
+      - name: Strip unsupported dtc "-@" flag wherever DTC_FLAGS is set
         working-directory: kernel_source
         run: |
-          # CONFIRMED via V=1 log: "./scripts/dtc/dtc: invalid option -- '@'"
-          # This kernel's bundled dtc predates the -@ (overlay symbol) flag,
-          # but scripts/Makefile.lib passes it unconditionally. Strip it so
-          # the build's own dtc invocation matches what its own dtc supports.
-          grep -rl -- "-@" scripts/Makefile.lib arch/arm64/boot/dts/qcom/Makefile 2>/dev/null | \
-            xargs -r sed -i 's/ -@//g'
-          echo "Confirming -@ is gone from scripts/Makefile.lib:"
-          grep -n -- "-@" scripts/Makefile.lib || echo "  (no matches — clean)"
+          # v8's fix (targeting only scripts/Makefile.lib and the qcom dts
+          # Makefile) did NOT resolve the error on the next run — the same
+          # "unknown option" failure recurred on sdm429.dtb. That means -@
+          # is set somewhere we didn't check, most likely arch/arm64/Makefile
+          # itself (a common place for DTC_FLAGS in this kernel generation).
+          # This version searches every Makefile under scripts/ and
+          # arch/arm64, but ONLY touches lines containing "DTC_FLAGS" (to
+          # avoid accidentally mangling unrelated lines that happen to
+          # contain "-@").
+          echo "Files containing DTC_FLAGS before stripping:"
+          grep -rn "DTC_FLAGS" scripts/ arch/arm64 --include="Makefile*" 2>/dev/null || echo "  (none found — see note below)"
+          echo ""
+          echo "Stripping -@ from any DTC_FLAGS line found..."
+          find scripts/ arch/arm64 -type f -name "Makefile*" -print0 2>/dev/null | \
+            xargs -0 -r sed -i '/DTC_FLAGS/ s/-@//g'
+          echo ""
+          echo "Files containing DTC_FLAGS after stripping (should show no -@ left):"
+          grep -rn "DTC_FLAGS" scripts/ arch/arm64 --include="Makefile*" 2>/dev/null || echo "  (none found)"
+          echo ""
+          echo "NOTE: if the line above still shows -@, or if no DTC_FLAGS"
+          echo "lines were found at all, the flag may be getting added"
+          echo "dynamically (e.g. via a Kconfig-driven Makefile.build rule)"
+          echo "rather than as a plain literal string — send the next build"
+          echo "log's V=1 dtc command line and we'll track it down precisely."
 
       - name: Exclude broken drivers/staging/prima from the build
         working-directory: kernel_source
