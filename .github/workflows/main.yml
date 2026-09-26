@@ -63,6 +63,17 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 # that looks like it depends on overlay output, that assumption was wrong
 # for this specific tree — flag it and we'll look at Makefile structure
 # directly instead.
+# v11 attempted to disable overlay building via a "dtbo-y" variable — but
+#   the actual Makefile (confirmed by user screenshot) doesn't use that
+#   variable name at all; the step found nothing to change.
+# v12 (this version): corrected using the REAL Makefile structure. Overlays
+#   are declared via harmless "<name>.dtbo-base := <base dtbs>" mapping
+#   lines, while the actual build trigger is the overlay name as a bare
+#   token mixed into a "dtb-$(CONFIG_ARCH_SDM429) += ..." list alongside
+#   real .dtb files. Uses perl with a negative lookahead to strip only bare
+#   ".dtbo" tokens (never ".dtbo-base" ones) wherever they appear on a
+#   line — safer than deleting whole lines, since a line's "+=" prefix can
+#   be shared with other real .dtb targets we still need.
 # ---------------------------------------------------------------------------
 
 on:
@@ -215,27 +226,34 @@ jobs:
       - name: Disable device-tree overlay (dtbo) building entirely
         working-directory: kernel_source
         run: |
-          # CONFIRMED: sdm429-mtp-P81081-overlay.dts fails with a genuine
-          # syntax error — this kernel's ancient bundled dtc can't parse
-          # overlay ("/plugin/;") syntax at all. P81081 is an unrelated
-          # Qualcomm MTP reference board bundled in the same tree, not the
-          # gtowifi tablet. Rather than exclude overlays one board at a
-          # time, disable dtbo-y (overlay) building for this directory
-          # entirely — Samsung devices typically don't use the separate
-          # dtbo.img overlay mechanism anyway.
+          # CORRECTED from the previous version: the "dtbo-y" variable name
+          # was a wrong guess — this Makefile doesn't use it at all. Actual
+          # structure (confirmed from the real file): overlays are declared
+          # via "<name>.dtbo-base := <base dtb list>" lines (just a mapping,
+          # harmless to leave alone), while the ACTUAL build trigger is the
+          # overlay name listed as a plain token mixed directly into a
+          # "dtb-$(CONFIG_ARCH_SDM429) += ..." style list alongside normal
+          # .dtb files.
+          #
+          # Rather than delete whole lines (risky — a "+=" prefix could
+          # share a line with other real .dtb targets we need), this uses
+          # perl with a negative lookahead to strip ONLY bare ".dtbo" list
+          # tokens (wherever they appear on a line), while explicitly never
+          # touching ".dtbo-base" tokens.
           DTS_MAKEFILE="arch/arm64/boot/dts/qcom/Makefile"
           if [ -f "$DTS_MAKEFILE" ]; then
-            echo "dtbo-y references before:"
-            grep -n "dtbo-y" "$DTS_MAKEFILE" || echo "  (none found)"
-            sed -i -E 's/^(dtbo-y[[:space:]]*[:+]?=.*)$/# \1 # disabled: unrelated board overlays fail on this kernel'"'"'s ancient dtc/' \
-              "$DTS_MAKEFILE"
+            echo "Bare .dtbo token count before:"
+            grep -o '[[:alnum:]_.-]*\.dtbo\b' "$DTS_MAKEFILE" | grep -v '\-base$' | wc -l
+            perl -i -pe 's/\S*\.dtbo(?!-base)\b\s*\\?\s*//g' "$DTS_MAKEFILE"
+            echo "Bare .dtbo token count after (should be 0):"
+            grep -o '[[:alnum:]_.-]*\.dtbo\b' "$DTS_MAKEFILE" | grep -v '\-base$' | wc -l
             echo ""
-            echo "dtbo-y references after:"
-            grep -n "dtbo-y" "$DTS_MAKEFILE" || echo "  (none found — clean)"
+            echo "(.dtbo-base mapping lines are left untouched — they're"
+            echo "harmless once nothing references the overlay as a target.)"
           else
             echo "WARNING: $DTS_MAKEFILE not found at this path — check the"
-            echo "kernel tree structure and locate dtbo-y manually if this"
-            echo "error recurs."
+            echo "kernel tree structure and locate the overlay list manually"
+            echo "if this error recurs."
           fi
 
       - name: Exclude broken drivers/staging/prima from the build
