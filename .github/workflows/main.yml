@@ -40,6 +40,29 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 #   and fixed the real source this time, or whether the flag is being added
 #   some other way entirely (in which case the next V=1 log's dtc command
 #   line is needed to pin it down for certain).
+# v10: user confirmed the real defconfig name, lineageos_gtowifi_defconfig.
+# v11 (this version) fixes the NEXT error that appeared:
+#   "Error: ../arch/arm64/boot/dts/qcom/sdm429-mtp-P81081-overlay.dts:15.2-8
+#    syntax error" / "FATAL ERROR: Unable to parse input tree", failing via
+#   scripts/Makefile.dtbo (a build path specific to device-tree OVERLAY
+#   targets, separate from plain .dtb files).
+# Root cause: overlay .dts files use special "/plugin/;" + "fragment@N {...}"
+# syntax, which requires dtc overlay support that this kernel's ancient
+# bundled dtc almost certainly lacks entirely — not just the -@ flag we
+# already stripped, but the ability to parse overlay syntax at all. Also,
+# "P81081" is Qualcomm's MTP reference board for this SoC family, bundled
+# into the same kernel tree as one of several supported boards — it has
+# nothing to do with the gtowifi tablet. There could be several more
+# unrelated boards' overlays that would fail the same way one at a time.
+# Fix: disable overlay (dtbo-y) building entirely for arch/arm64/boot/dts/
+# qcom, rather than exclude each unrelated board's overlay individually.
+# Samsung devices typically boot from a single monolithic DTB rather than
+# Google's separate dtbo.img overlay mechanism, so this should have no
+# effect on gtowifi's actual boot image.
+# NOTE: if the plain sdm429.dtb build subsequently fails with something
+# that looks like it depends on overlay output, that assumption was wrong
+# for this specific tree — flag it and we'll look at Makefile structure
+# directly instead.
 # ---------------------------------------------------------------------------
 
 on:
@@ -188,6 +211,32 @@ jobs:
           echo "dynamically (e.g. via a Kconfig-driven Makefile.build rule)"
           echo "rather than as a plain literal string — send the next build"
           echo "log's V=1 dtc command line and we'll track it down precisely."
+
+      - name: Disable device-tree overlay (dtbo) building entirely
+        working-directory: kernel_source
+        run: |
+          # CONFIRMED: sdm429-mtp-P81081-overlay.dts fails with a genuine
+          # syntax error — this kernel's ancient bundled dtc can't parse
+          # overlay ("/plugin/;") syntax at all. P81081 is an unrelated
+          # Qualcomm MTP reference board bundled in the same tree, not the
+          # gtowifi tablet. Rather than exclude overlays one board at a
+          # time, disable dtbo-y (overlay) building for this directory
+          # entirely — Samsung devices typically don't use the separate
+          # dtbo.img overlay mechanism anyway.
+          DTS_MAKEFILE="arch/arm64/boot/dts/qcom/Makefile"
+          if [ -f "$DTS_MAKEFILE" ]; then
+            echo "dtbo-y references before:"
+            grep -n "dtbo-y" "$DTS_MAKEFILE" || echo "  (none found)"
+            sed -i -E 's/^(dtbo-y[[:space:]]*[:+]?=.*)$/# \1 # disabled: unrelated board overlays fail on this kernel'"'"'s ancient dtc/' \
+              "$DTS_MAKEFILE"
+            echo ""
+            echo "dtbo-y references after:"
+            grep -n "dtbo-y" "$DTS_MAKEFILE" || echo "  (none found — clean)"
+          else
+            echo "WARNING: $DTS_MAKEFILE not found at this path — check the"
+            echo "kernel tree structure and locate dtbo-y manually if this"
+            echo "error recurs."
+          fi
 
       - name: Exclude broken drivers/staging/prima from the build
         working-directory: kernel_source
