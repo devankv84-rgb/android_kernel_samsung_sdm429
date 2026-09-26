@@ -32,7 +32,7 @@ jobs:
       run: |
         cd ..
         # Use the dedicated Android 4.9/ARM64-compatible repository
-        git clone https://github.com/aircrack-ng/rtl8812au.git
+        git clone https://github.com/gordboy/rtl8812au.git
         cd rtl8812au
         
         # 1. Switch target architecture from x86 PC to ARM64
