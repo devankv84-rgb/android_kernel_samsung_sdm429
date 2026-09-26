@@ -29,28 +29,21 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 #   gcc-arm-linux-gnueabi and setting CROSS_COMPILE_ARM32.
 # v3 fixed: "ld: cannot represent machine `arm'" (vdso32 link failure) by
 #   switching from apt's cross-toolchain to prebuilt AOSP GCC 4.9 toolchains.
-# v4 fixed: "your version of GCC is too old" by switching to Proton Clang.
-# v5 (this version) fixes the NEXT error that appeared:
-#   drivers/staging/prima/CORE/SYS/legacy/src/utils/src/macTrace.c:
-#   "error: use of undeclared identifier 'P2P_NOT_ACTIVE'" (and 8 similar)
-# Root cause: this is a real bug in the kernel source itself, not the build
-# environment. drivers/staging/prima is Qualcomm's legacy WCN36xx-family
-# WiFi driver — old "staging" code that was never fully cleaned up. Some of
-# its P2P state constants are declared only under a feature flag that this
-# defconfig branch doesn't enable consistently, so macTrace.c references
-# identifiers that were never declared. This driver also isn't needed for
-# our goal: it controls the tablet's *built-in* WiFi chip, whose firmware
-# doesn't expose monitor mode/injection regardless — NetHunter functionality
-# here comes from external USB adapters (see the driver hand-porting steps
-# elsewhere in this workflow), not this chip.
-# Fix: exclude drivers/staging/prima from the build entirely, rather than
-# chase down the exact missing feature macro in dead legacy code.
-# NOTE: this will disable the tablet's BUILT-IN WiFi if prima is in fact the
-# active driver stack for it. If your normal WiFi stops working after
-# flashing, this staging driver was actually load-bearing and you'll need
-# to instead fix the missing macro (add the right #ifdef guard around the
-# P2P_* cases in macTrace.c, or find and enable the matching CONFIG_ flag)
-# rather than exclude the driver.
+# v5 fixed: undeclared P2P_* identifiers in drivers/staging/prima by
+#   excluding that broken legacy staging driver from the build.
+# v6 (this version) fixes the NEXT error that appeared:
+#   dtc: "Error: unknown option" while building arch/arm64/boot/dts/qcom/
+#   sdm429.dtb, with dtc printing its own help text first.
+# Root cause: the kernel builds its OWN copy of dtc from source during the
+# build (visible as "HOSTLD scripts/dtc/dtc" earlier in the log) — but this
+# workflow was also apt-get installing a system-wide device-tree-compiler
+# package. When the system dtc ends up ahead of the freshly-built one on
+# PATH, the build calls the wrong dtc binary — one whose version doesn't
+# support the flags this kernel's Makefiles pass it, producing "unknown
+# option" instead of a normal compile error.
+# Fix: stop installing the system device-tree-compiler package entirely.
+# The kernel already builds and uses its own matching dtc; nothing else in
+# this workflow depends on a system-wide one.
 # ---------------------------------------------------------------------------
 
 on:
@@ -68,7 +61,7 @@ env:
   DEVICE_CODENAME: gtowifi                      # Samsung Galaxy Tab A 8.0 (2019)
   DEFCONFIG: lineageos_gtowifi_defconfig            # <<< confirm against arch/arm64/configs/ in the repo >>>
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
-  KERNEL_BRANCH: lineage-19.1                   # <<< confirm this branch exists; fall back if not pushed yet >>>
+  KERNEL_BRANCH: lineage-22.2                   # <<< confirm this branch exists; fall back if not pushed yet >>>
   NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
   ARCH: arm64
   OUT_DIR: out
@@ -91,7 +84,10 @@ jobs:
           sudo apt-get install -y \
             git build-essential bc bison flex libssl-dev libncurses-dev \
             python3 python3-pip lz4 zip unzip wget curl \
-            device-tree-compiler cpio rsync
+            cpio rsync
+          # NOTE: no device-tree-compiler here — the kernel builds its own
+          # matching dtc from source; installing the system one can shadow
+          # it on PATH and cause "unknown option" errors (see FIX HISTORY).
           # NOTE: no gcc-aarch64-linux-gnu / gcc-arm-linux-gnueabi here anymore —
           # see "Pull toolchains" step below for why.
 
@@ -102,6 +98,20 @@ jobs:
           # This replaces the GCC 4.9 toolchains from the previous version.
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
           echo "TOOLCHAIN_BIN=$GITHUB_WORKSPACE/proton-clang/bin" >> "$GITHUB_ENV"
+
+      - name: Ensure no system dtc shadows the kernel's own build
+        run: |
+          # Ubuntu runner images sometimes ship dtc pre-installed even
+          # without us apt-get installing it. If present, move it aside so
+          # PATH resolution can't accidentally prefer it over the kernel's
+          # freshly-built scripts/dtc/dtc.
+          SYS_DTC=$(command -v dtc || true)
+          if [ -n "$SYS_DTC" ]; then
+            echo "Found pre-existing system dtc at $SYS_DTC — moving it aside."
+            sudo mv "$SYS_DTC" "${SYS_DTC}.disabled-by-workflow"
+          else
+            echo "No pre-existing system dtc found — nothing to do."
+          fi
 
       - name: Checkout kernel source
         run: |
