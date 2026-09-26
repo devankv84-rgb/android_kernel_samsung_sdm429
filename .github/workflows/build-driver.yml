@@ -14,12 +14,13 @@ jobs:
     - name: Install Build Dependencies
       run: |
         sudo apt update
-        sudo apt install -y git bc bison flex libssl-dev make gcc-aarch64-linux-gnu build-essential
+        sudo apt install -y git bc bison flex libssl-dev make gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi build-essential
 
     - name: Set Environment Variables
       run: |
         echo "ARCH=arm64" >> $GITHUB_ENV
         echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
 
     - name: Prepare Kernel Configuration and Headers
       run: |
@@ -46,4 +47,3 @@ jobs:
       with:
         name: TP-Link-Archer-T2U-Plus-Driver
         path: ../rtl8812au/8812au.ko
-        
