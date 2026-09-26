@@ -29,21 +29,19 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 #   gcc-arm-linux-gnueabi and setting CROSS_COMPILE_ARM32.
 # v3 fixed: "ld: cannot represent machine `arm'" (vdso32 link failure) by
 #   switching from apt's cross-toolchain to prebuilt AOSP GCC 4.9 toolchains.
-# v5 fixed: undeclared P2P_* identifiers in drivers/staging/prima by
-#   excluding that broken legacy staging driver from the build.
-# v6 (this version) fixes the NEXT error that appeared:
-#   dtc: "Error: unknown option" while building arch/arm64/boot/dts/qcom/
-#   sdm429.dtb, with dtc printing its own help text first.
-# Root cause: the kernel builds its OWN copy of dtc from source during the
-# build (visible as "HOSTLD scripts/dtc/dtc" earlier in the log) — but this
-# workflow was also apt-get installing a system-wide device-tree-compiler
-# package. When the system dtc ends up ahead of the freshly-built one on
-# PATH, the build calls the wrong dtc binary — one whose version doesn't
-# support the flags this kernel's Makefiles pass it, producing "unknown
-# option" instead of a normal compile error.
-# Fix: stop installing the system device-tree-compiler package entirely.
-# The kernel already builds and uses its own matching dtc; nothing else in
-# this workflow depends on a system-wide one.
+# v6 fixed: dtc "unknown option" by removing apt's device-tree-compiler and
+#   moving aside any pre-existing system dtc.
+# v7 (this version): the SAME dtc "unknown option" error persisted even with
+#   every external dtc removed — proving it wasn't a system-vs-kernel dtc
+#   conflict. The kernel's own self-built dtc is being passed a flag it
+#   doesn't understand, which points to a real mismatch inside the kernel
+#   source itself (an old bundled dtc.c not supporting a flag its own build
+#   scripts pass, e.g. "-@" for device-tree overlay symbols). Rather than
+#   guess which flag, this version adds V=1 to the build so make prints the
+#   FULL dtc command line instead of the abbreviated "DTC file.dtb" form —
+#   find that line in the log right before the sdm429.dtb failure, and the
+#   flag it's choking on will be visible directly, turning this into an
+#   exact fix instead of another guess.
 # ---------------------------------------------------------------------------
 
 on:
@@ -59,7 +57,7 @@ on:
 
 env:
   DEVICE_CODENAME: gtowifi                      # Samsung Galaxy Tab A 8.0 (2019)
-  DEFCONFIG: lineageos_gtowifi_defconfig            # <<< confirm against arch/arm64/configs/ in the repo >>>
+  DEFCONFIG: lineageos_gtowifi_defconfig             # <<< confirm against arch/arm64/configs/ in the repo >>>
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
   KERNEL_BRANCH: lineage-22.2                   # <<< confirm this branch exists; fall back if not pushed yet >>>
   NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
@@ -165,6 +163,19 @@ jobs:
           echo "ARCH=arm64" >> "$GITHUB_ENV"
           echo "${{ env.TOOLCHAIN_BIN }}" >> "$GITHUB_PATH"
 
+      - name: (Optional, disabled) Strip likely-unsupported dtc flag
+        if: false
+        working-directory: kernel_source
+        run: |
+          # NOT enabled by default — this is an educated guess, not confirmed.
+          # The most common cause of this exact error in old CAF-derived
+          # kernels is scripts/Makefile.lib or the arch dts Makefile passing
+          # "-@" (overlay symbol generation) to a bundled dtc.c that predates
+          # that flag. If the V=1 log confirms "-@" is the culprit, flip
+          # `if: false` to `if: true` above to strip it automatically:
+          grep -rl -- "-@" scripts/Makefile.lib arch/arm64/boot/dts/qcom/Makefile 2>/dev/null | \
+            xargs -r sed -i 's/ -@//g'
+
       - name: Exclude broken drivers/staging/prima from the build
         working-directory: kernel_source
         run: |
@@ -220,7 +231,10 @@ jobs:
       - name: Build kernel
         working-directory: kernel_source
         run: |
-          make -j"$(nproc)" O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
+          # V=1 makes `make` print full command lines (instead of the
+          # abbreviated "DTC file.dtb" form) so we can see exactly which
+          # flag is being passed to dtc if it fails again — see FIX HISTORY.
+          make -j"$(nproc)" V=1 O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
             CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
