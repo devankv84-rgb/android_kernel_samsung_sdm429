@@ -361,7 +361,7 @@ jobs:
 
       # ... (rest of your build steps above) ...
 
-            - name: Package flashable zip with AnyKernel3
+      - name: Package flashable zip with AnyKernel3
         run: |
           # 1. Clone the template repository
           git clone --depth=1 ${{ env.ANYKERNEL_REPO }} anykernel3_workspace
