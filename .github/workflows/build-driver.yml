@@ -23,7 +23,7 @@ jobs:
 
     - name: Prepare Kernel Configuration and Headers
       run: |
-        make lineage_gtowifi_defconfig
+        make lineageos_gtowifi_defconfig
         make modules_prepare -j$(nproc)
 
     - name: Clone and Patch rtl8812au Driver
