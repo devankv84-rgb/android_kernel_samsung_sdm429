@@ -68,7 +68,7 @@ env:
   DEVICE_CODENAME: gtowifi                      # Samsung Galaxy Tab A 8.0 (2019)
   DEFCONFIG: lineageos_gtowifi_defconfig            # <<< confirm against arch/arm64/configs/ in the repo >>>
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
-  KERNEL_BRANCH: lineage-22.2                   # <<< confirm this branch exists; fall back if not pushed yet >>>
+  KERNEL_BRANCH: lineage-19.1                   # <<< confirm this branch exists; fall back if not pushed yet >>>
   NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
   ARCH: arm64
   OUT_DIR: out
