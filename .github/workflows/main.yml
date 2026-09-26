@@ -328,19 +328,37 @@ jobs:
           echo "Found kernel image: $IMG"
           echo "KERNEL_IMAGE_PATH=$IMG" >> "$GITHUB_ENV"
 
-      - name: Package as AnyKernel3 flashable zip
-        run: |
-          git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" anykernel
-          cp "kernel_source/${{ env.KERNEL_IMAGE_PATH }}" anykernel/
-          # <<< Edit anykernel/anykernel.sh with correct device.name0,
-          # block partition paths, and any dtb/dtbo handling for gtowifi. >>>
-          cd anykernel
-          zip -r9 "../NetHunter-${{ env.DEVICE_CODENAME }}-$(date +%Y%m%d).zip" . \
-            -x ".git*" -x "README.md"
+      # ... (rest of your build steps above) ...
 
-      - name: Upload build artifact
+      - name: Package flashable zip with AnyKernel3
+        run: |
+          # 1. Clone the template repository
+          git clone --depth=1 ${{ env.ANYKERNEL_REPO }} anykernel3_workspace
+          cd anykernel3_workspace
+          
+          # 2. Clean out target placeholder files
+          rm -rf README.md LICENSE *placeholder
+          
+          # 3. Copy your compiled kernel binary into the workspace root
+          cp ../kernel_source/out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb || \
+          cp ../kernel_source/out/arch/arm64/boot/Image.gz ./Image.gz
+          
+          # 4. Configure anykernel.sh variables for your device
+          sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for Galaxy Tab A 8.0/g' anykernel.sh
+          
+          # Inject multiple codename variants to catch whatever your ROM uses in build.prop
+          sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
+          sed -i '/device.name1=gtowifi/a device.name2=gtowifiopen\ndevice.name3=gtowificell\ndevice.name4=gtowifixx\ndevice.name5=SM-T290\ndevice.name6=gto' anykernel.sh
+          
+          sed -i 's/BLOCK=.*/BLOCK=auto;/g' anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' anykernel.sh
+          
+          # 5. Compress into the final flashable zip file
+          zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
+
+      - name: Upload Flashable Kernel Zip File
         uses: actions/upload-artifact@v4
         with:
-          name: nethunter-kernel-${{ env.DEVICE_CODENAME }}
-          path: "*.zip"
-          retention-days: 14
+          name: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}
+          path: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip
+          
