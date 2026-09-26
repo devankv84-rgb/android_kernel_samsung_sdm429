@@ -1,0 +1,48 @@
+name: Build Realtek USB Wi-Fi Driver
+
+on:
+  workflow_dispatch: # Allows you to manually trigger the build with a button click
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y git bc bison flex libssl-dev make gcc-aarch64-linux-gnu build-essential
+
+    - name: Set Environment Variables
+      run: |
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+    - name: Prepare Kernel Configuration and Headers
+      run: |
+        make gtowifi_defconfig
+        make modules_prepare -j$(nproc)
+
+    - name: Clone and Patch rtl8812au Driver
+      run: |
+        cd ..
+        git clone https://github.com
+        cd rtl8812au
+        # Edit the driver Makefile using sed to change architecture targets to ARM64
+        sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/g' Makefile
+        sed -i 's/CONFIG_PLATFORM_AARCH64_RUN = n/CONFIG_PLATFORM_AARCH64_RUN = y/g' Makefile
+
+    - name: Compile the Driver Module
+      run: |
+        KERNEL_DIR=$GITHUB_WORKSPACE
+        cd ../rtl8812au
+        make KSRC=$KERNEL_DIR -j$(nproc)
+
+    - name: Upload Driver Binary Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TP-Link-Archer-T2U-Plus-Driver
+        path: ../rtl8812au/8812au.ko
