@@ -21,11 +21,12 @@ jobs:
         echo "ARCH=arm64" >> $GITHUB_ENV
         echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
         echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
+        echo "LD_ARM32=arm-linux-gnueabi-ld" >> $GITHUB_ENV
 
     - name: Prepare Kernel Configuration and Headers
       run: |
         make lineageos_gtowifi_defconfig
-        make modules_prepare -j$(nproc)
+        make modules_prepare LD_ARM32=arm-linux-gnueabi-ld -j$(nproc)
 
     - name: Clone and Patch rtl8812au Driver
       run: |
@@ -40,10 +41,11 @@ jobs:
       run: |
         KERNEL_DIR=$GITHUB_WORKSPACE
         cd ../rtl8812au
-        make KSRC=$KERNEL_DIR -j$(nproc)
+        make KSRC=$KERNEL_DIR CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 -j$(nproc)
 
     - name: Upload Driver Binary Artifact
       uses: actions/upload-artifact@v4
       with:
         name: TP-Link-Archer-T2U-Plus-Driver
         path: ../rtl8812au/8812au.ko
+        
