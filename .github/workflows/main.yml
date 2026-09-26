@@ -1,266 +1,144 @@
-name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
-
-# ---------------------------------------------------------------------------
-# HOW TO USE THIS FILE
-# 1. Place this at: <your-repo>/.github/workflows/build-nethunter-kernel.yml
-# 2. Fill in the one or two placeholders still marked with <<< >>> below.
-# 3. Trigger manually from the Actions tab, or push a tag like "kernel-v1".
-#
-# CONFIRMED DEVICE INFO (Samsung Galaxy Tab A 8.0 (2019), codename gtowifi):
-# - SoC: Qualcomm Snapdragon 429 (SDM429), arm64, quad-core Cortex-A53
-# - Official kernel source: LineageOS/android_kernel_samsung_sdm429
-#   (this is a shared SoC kernel tree used across several sdm429 devices,
-#   not a gtowifi-only repo — that's expected and correct)
-# - LineageOS 22.2 = Android 15, so branch should be lineage-22.2 if the
-#   maintainer (lifehackerhansol) has pushed one; if not yet available,
-#   check the repo's branch list and fall back to the newest existing branch.
-#
-# STILL TO CONFIRM YOURSELF (varies by exact branch/commit):
-# - Exact defconfig filename in arch/arm64/configs/ of that branch — SDM429
-#   Qualcomm CAF-derived trees commonly use something like
-#   "sdm429-perf_defconfig" or a device-specific "gtowifi-perf_defconfig".
-#   List the directory after cloning to confirm before your first build.
-# - Toolchain: SDM429 is a newer-ish Qualcomm CAF kernel (Linux 4.9-ish),
-#   so Clang/LLVM (as AOSP ships) usually works, but this workflow defaults
-#   to GCC for safety — switch to Clang if the kernel's own docs recommend it.
-#
-# FIX HISTORY:
-# v2 fixed: "CROSS_COMPILE_ARM32 not defined or empty" by installing apt's
-#   gcc-arm-linux-gnueabi and setting CROSS_COMPILE_ARM32.
-# v3 fixed: "ld: cannot represent machine `arm'" (vdso32 link failure) by
-#   switching from apt's cross-toolchain to prebuilt AOSP GCC 4.9 toolchains.
-# v6 fixed: dtc "unknown option" by removing apt's device-tree-compiler and
-#   moving aside any pre-existing system dtc.
-# v7 (this version): the SAME dtc "unknown option" error persisted even with
-#   every external dtc removed — proving it wasn't a system-vs-kernel dtc
-#   conflict. The kernel's own self-built dtc is being passed a flag it
-#   doesn't understand, which points to a real mismatch inside the kernel
-#   source itself (an old bundled dtc.c not supporting a flag its own build
-#   scripts pass, e.g. "-@" for device-tree overlay symbols). Rather than
-#   guess which flag, this version adds V=1 to the build so make prints the
-#   FULL dtc command line instead of the abbreviated "DTC file.dtb" form —
-#   find that line in the log right before the sdm429.dtb failure, and the
-#   flag it's choking on will be visible directly, turning this into an
-#   exact fix instead of another guess.
-# ---------------------------------------------------------------------------
+name: Build GTOWIFI Kernel
 
 on:
   workflow_dispatch:
-    inputs:
-      kernel_branch:
-        description: "Kernel source branch/tag to build"
-        required: false
-        default: "lineage-22.2"
-  push:
-    tags:
-      - "kernel-v*"
 
 env:
-  DEVICE_CODENAME: gtowifi                      # Samsung Galaxy Tab A 8.0 (2019)
-  DEFCONFIG: lineageos_gtowifi_defconfig             # <<< confirm against arch/arm64/configs/ in the repo >>>
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
-  KERNEL_BRANCH: lineage-22.2                   # <<< confirm this branch exists; fall back if not pushed yet >>>
-  NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
+  KERNEL_BRANCH: lineage-22.2
   ARCH: arm64
-  OUT_DIR: out
-  ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
+  SUBARCH: arm64
 
 jobs:
   build:
+    name: Build Samsung SM-T290 Kernel
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
 
     steps:
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo apt-get clean
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git build-essential bc bison flex libssl-dev libncurses-dev \
-            python3 python3-pip lz4 zip unzip wget curl \
-            cpio rsync
-          # NOTE: no device-tree-compiler here — the kernel builds its own
-          # matching dtc from source; installing the system one can shadow
-          # it on PATH and cause "unknown option" errors (see FIX HISTORY).
-          # NOTE: no gcc-aarch64-linux-gnu / gcc-arm-linux-gnueabi here anymore —
-          # see "Pull toolchains" step below for why.
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            flex \
+            git \
+            libelf-dev \
+            libncurses5-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            zip
 
-      - name: Pull Proton Clang toolchain
+      - name: Clone kernel
         run: |
-          # Proton Clang bundles Clang + correctly-built GNU binutils for
-          # both aarch64 and 32-bit-compat arm targets in one package.
-          # This replaces the GCC 4.9 toolchains from the previous version.
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
-          echo "TOOLCHAIN_BIN=$GITHUB_WORKSPACE/proton-clang/bin" >> "$GITHUB_ENV"
+          git clone \
+            --depth=1 \
+            --branch "${KERNEL_BRANCH}" \
+            "${KERNEL_REPO}" \
+            kernel
 
-      - name: Ensure no system dtc shadows the kernel's own build
+      - name: Show kernel information
+        working-directory: kernel
         run: |
-          # Ubuntu runner images sometimes ship dtc pre-installed even
-          # without us apt-get installing it. If present, move it aside so
-          # PATH resolution can't accidentally prefer it over the kernel's
-          # freshly-built scripts/dtc/dtc.
-          SYS_DTC=$(command -v dtc || true)
-          if [ -n "$SYS_DTC" ]; then
-            echo "Found pre-existing system dtc at $SYS_DTC — moving it aside."
-            sudo mv "$SYS_DTC" "${SYS_DTC}.disabled-by-workflow"
-          else
-            echo "No pre-existing system dtc found — nothing to do."
-          fi
+          echo "Kernel:"
+          git log -1 --oneline
 
-      - name: Checkout kernel source
+          echo
+          echo "Available ARM64 defconfigs:"
+          find arch/arm64/configs -type f | sort
+
+      - name: Build DTC
+        working-directory: kernel
         run: |
-          git clone --depth=1 -b "${{ github.event.inputs.kernel_branch || env.KERNEL_BRANCH }}" \
-            "${{ env.KERNEL_REPO }}" kernel_source
+          make ARCH=${ARCH} scripts_dtc
 
-      - name: List available defconfigs (sanity check)
-        working-directory: kernel_source
+          echo
+          echo "DTC version:"
+          ./scripts/dtc/dtc --version
+
+      - name: Find GTOWIFI configuration
+        working-directory: kernel
         run: |
-          echo "Available defconfigs for this branch:"
-          ls arch/arm64/configs/ | grep -i -E "gto|sdm429|perf" || ls arch/arm64/configs/
-          echo ""
-          echo "If DEFCONFIG in the env block above doesn't match one of these,"
-          echo "update it before the 'Configure kernel' step runs."
+          echo "Searching for GTOWIFI/SDM429 configurations..."
 
-      - name: Clone NetHunter kernel build helper scripts
-        run: |
-          git clone --depth=1 "${{ env.NETHUNTER_KERNEL_BUILDER }}" nethunter-builder
+          find arch/arm64/configs \
+            -type f \
+            | grep -Ei 'gto|sdm429|sdm439|qualcomm|msm' \
+            || true
 
-      - name: Apply NetHunter kernel patches
-        working-directory: kernel_source
-        run: |
-          # <<< Adjust this path — NetHunter's repo structure changes over time.
-          # Typically you copy/merge the patch set matching your kernel version,
-          # e.g. patches for Wi-Fi monitor mode + injection, HID gadget support,
-          # RTL88XXau/RTL8812AU drivers, and USB gadget tethering. >>>
-          PATCH_DIR="../nethunter-builder/patches/<<<kernel-version-folder>>>"
-          if [ -d "$PATCH_DIR" ]; then
-            for p in "$PATCH_DIR"/*.patch; do
-              echo "Applying $p"
-              git apply --reject --whitespace=fix "$p" || true
-            done
-          else
-            echo "WARNING: no matching NetHunter patch directory found for this kernel version."
-            echo "You will likely need to hand-port patches. See:"
-            echo "https://www.kali.org/docs/nethunter/nethunter-kernel-development/"
-          fi
-
-      - name: Set up toolchain
-        run: |
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE=${{ env.TOOLCHAIN_BIN }}/aarch64-linux-gnu-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_ARM32=${{ env.TOOLCHAIN_BIN }}/arm-linux-gnueabi-" >> "$GITHUB_ENV"
-          echo "LD=ld.lld" >> "$GITHUB_ENV"
-          echo "AR=llvm-ar" >> "$GITHUB_ENV"
-          echo "NM=llvm-nm" >> "$GITHUB_ENV"
-          echo "OBJCOPY=llvm-objcopy" >> "$GITHUB_ENV"
-          echo "OBJDUMP=llvm-objdump" >> "$GITHUB_ENV"
-          echo "STRIP=llvm-strip" >> "$GITHUB_ENV"
-          echo "ARCH=arm64" >> "$GITHUB_ENV"
-          echo "${{ env.TOOLCHAIN_BIN }}" >> "$GITHUB_PATH"
-
-      - name: (Optional, disabled) Strip likely-unsupported dtc flag
-        if: false
-        working-directory: kernel_source
-        run: |
-          # NOT enabled by default — this is an educated guess, not confirmed.
-          # The most common cause of this exact error in old CAF-derived
-          # kernels is scripts/Makefile.lib or the arch dts Makefile passing
-          # "-@" (overlay symbol generation) to a bundled dtc.c that predates
-          # that flag. If the V=1 log confirms "-@" is the culprit, flip
-          # `if: false` to `if: true` above to strip it automatically:
-          grep -rl -- "-@" scripts/Makefile.lib arch/arm64/boot/dts/qcom/Makefile 2>/dev/null | \
-            xargs -r sed -i 's/ -@//g'
-
-      - name: Exclude broken drivers/staging/prima from the build
-        working-directory: kernel_source
-        run: |
-          # This legacy Qualcomm WCN36xx driver has a source bug (undeclared
-          # P2P_* identifiers in macTrace.c) and isn't needed for our goal —
-          # see the FIX HISTORY note at the top of this file for details.
-          if grep -rq "prima" drivers/staging/Makefile; then
-            sed -i -E 's/^(obj-.*prima.*)$/# \1 # excluded: broken staging driver, unused by this build/' \
-              drivers/staging/Makefile
-            echo "Excluded drivers/staging/prima from drivers/staging/Makefile"
-            grep -n "prima" drivers/staging/Makefile || true
-          else
-            echo "No reference to prima found in drivers/staging/Makefile — nothing to exclude."
-            echo "If the build still fails on prima, check drivers/staging/Kconfig instead."
-          fi
-
-      # Shared make args reused by every kernel build step below.
       - name: Configure kernel
-        working-directory: kernel_source
+        working-directory: kernel
         run: |
-          make O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
-            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
-            ${{ env.DEFCONFIG }}
+          set -e
 
-      - name: (Optional) Enable NetHunter-required kernel configs
-        working-directory: kernel_source
-        run: |
-          # <<< Confirm exact CONFIG_ names against your kernel's Kconfig — these
-          # are the commonly required ones for NetHunter (monitor mode, packet
-          # injection, USB gadget/HID, TUN/TAP for VPN tooling). >>>
-          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
-            -e CONFIG_TUN \
-            -e CONFIG_USB_GADGET \
-            -e CONFIG_USB_CONFIGFS \
-            -e CONFIG_USB_CONFIGFS_F_HID \
-            -e CONFIG_HIDRAW \
-            -e CONFIG_PACKET \
-            -e CONFIG_CFG80211_WEXT \
-            -e CONFIG_MAC80211 || true
+          DEFCONFIG=""
 
-          make O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
-            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
-            olddefconfig
+          for config in \
+            gto_defconfig \
+            gtowifi_defconfig \
+            sdm429_defconfig \
+            vendor/sdm429_defconfig
+          do
+            if [ -f "arch/arm64/configs/$config" ]; then
+              DEFCONFIG="$config"
+              break
+            fi
+          done
+
+          if [ -z "$DEFCONFIG" ]; then
+            echo "ERROR: Could not automatically find GTOWIFI defconfig."
+            echo
+            echo "Available configurations:"
+            find arch/arm64/configs -type f | sort
+            exit 1
+          fi
+
+          echo "Using defconfig: $DEFCONFIG"
+
+          make \
+            ARCH=${ARCH} \
+            SUBARCH=${SUBARCH} \
+            O=out \
+            "$DEFCONFIG"
 
       - name: Build kernel
-        working-directory: kernel_source
+        working-directory: kernel
         run: |
-          # V=1 makes `make` print full command lines (instead of the
-          # abbreviated "DTC file.dtb" form) so we can see exactly which
-          # flag is being passed to dtc if it fails again — see FIX HISTORY.
-          make -j"$(nproc)" V=1 O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
-            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }}
+          make \
+            -j"$(nproc --all)" \
+            ARCH=${ARCH} \
+            SUBARCH=${SUBARCH} \
+            O=out
 
-      - name: Locate kernel image
-        working-directory: kernel_source
+      - name: Collect kernel
         run: |
-          IMG=$(find ${{ env.OUT_DIR }} -name "Image*" -o -name "zImage*" | head -n1)
-          echo "Found kernel image: $IMG"
-          echo "KERNEL_IMAGE_PATH=$IMG" >> "$GITHUB_ENV"
+          mkdir -p artifacts
 
-      - name: Package as AnyKernel3 flashable zip
-        run: |
-          git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" anykernel
-          cp "kernel_source/${{ env.KERNEL_IMAGE_PATH }}" anykernel/
-          # <<< Edit anykernel/anykernel.sh with correct device.name0,
-          # block partition paths, and any dtb/dtbo handling for gtowifi. >>>
-          cd anykernel
-          zip -r9 "../NetHunter-${{ env.DEVICE_CODENAME }}-$(date +%Y%m%d).zip" . \
-            -x ".git*" -x "README.md"
+          find kernel/out/arch/arm64/boot \
+            -maxdepth 2 \
+            -type f \
+            -exec cp {} artifacts/ \; \
+            || true
 
-      - name: Upload build artifact
+          cp kernel/out/.config \
+            artifacts/kernel.config
+
+          echo "========== BUILD OUTPUT =========="
+          find artifacts -type f -printf '%p\n'
+
+      - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
-          name: nethunter-kernel-${{ env.DEVICE_CODENAME }}
-          path: "*.zip"
-          retention-days: 14
+          name: gtowifi-kernel
+          path: artifacts/
+          if-no-files-found: error
+          
