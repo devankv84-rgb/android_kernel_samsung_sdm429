@@ -1,26 +1,29 @@
+
 name: Build GTOWIFI Kernel
 
 on:
   workflow_dispatch:
 
 env:
-  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
-  KERNEL_BRANCH: lineage-22.2
   ARCH: arm64
   SUBARCH: arm64
 
 jobs:
   build:
-    name: Build Samsung SM-T290 Kernel
+    name: Build SM-T290 GTOWIFI Kernel
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
+      - name: Checkout kernel source
         uses: actions/checkout@v4
+        with:
+          ref: lineage-22.2
+          fetch-depth: 1
 
       - name: Install dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             bc \
             bison \
@@ -38,26 +41,20 @@ jobs:
             wget \
             zip
 
-      - name: Clone kernel
-        run: |
-          git clone \
-            --depth=1 \
-            --branch "${KERNEL_BRANCH}" \
-            "${KERNEL_REPO}" \
-            kernel
-
       - name: Show kernel information
-        working-directory: kernel
         run: |
-          echo "Kernel:"
+          echo "Kernel source:"
+          pwd
+
+          echo
+          echo "Git commit:"
           git log -1 --oneline
 
           echo
-          echo "Available ARM64 defconfigs:"
+          echo "ARM64 defconfigs:"
           find arch/arm64/configs -type f | sort
 
       - name: Build DTC
-        working-directory: kernel
         run: |
           make ARCH=${ARCH} scripts_dtc
 
@@ -65,18 +62,16 @@ jobs:
           echo "DTC version:"
           ./scripts/dtc/dtc --version
 
-      - name: Find GTOWIFI configuration
-        working-directory: kernel
+      - name: Find device defconfig
         run: |
-          echo "Searching for GTOWIFI/SDM429 configurations..."
+          echo "Searching for SDM429 / GTO configuration..."
 
           find arch/arm64/configs \
             -type f \
-            | grep -Ei 'gto|sdm429|sdm439|qualcomm|msm' \
+            | grep -Ei 'gto|sdm429|sdm439' \
             || true
 
       - name: Configure kernel
-        working-directory: kernel
         run: |
           set -e
 
@@ -95,14 +90,15 @@ jobs:
           done
 
           if [ -z "$DEFCONFIG" ]; then
-            echo "ERROR: Could not automatically find GTOWIFI defconfig."
+            echo "ERROR: GTOWIFI defconfig was not found."
             echo
-            echo "Available configurations:"
+            echo "Available ARM64 configurations:"
             find arch/arm64/configs -type f | sort
             exit 1
           fi
 
-          echo "Using defconfig: $DEFCONFIG"
+          echo "Using:"
+          echo "$DEFCONFIG"
 
           make \
             ARCH=${ARCH} \
@@ -111,7 +107,6 @@ jobs:
             "$DEFCONFIG"
 
       - name: Build kernel
-        working-directory: kernel
         run: |
           make \
             -j"$(nproc --all)" \
@@ -119,26 +114,57 @@ jobs:
             SUBARCH=${SUBARCH} \
             O=out
 
-      - name: Collect kernel
+      - name: Show build output
+        run: |
+          echo "========== BOOT OUTPUT =========="
+
+          find out/arch/arm64/boot \
+            -maxdepth 3 \
+            -type f \
+            -print || true
+
+          echo
+          echo "========== DTB / DTBO =========="
+
+          find out/arch/arm64/boot \
+            -type f \
+            \( -name "*.dtb" -o -name "*.dtbo" \) \
+            -print || true
+
+      - name: Prepare artifacts
         run: |
           mkdir -p artifacts
 
-          find kernel/out/arch/arm64/boot \
-            -maxdepth 2 \
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image artifacts/
+          fi
+
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz artifacts/
+          fi
+
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb artifacts/
+          fi
+
+          find out/arch/arm64/boot \
             -type f \
+            \( -name "*.dtb" -o -name "*.dtbo" \) \
             -exec cp {} artifacts/ \; \
             || true
 
-          cp kernel/out/.config \
-            artifacts/kernel.config
+          if [ -f out/.config ]; then
+            cp out/.config artifacts/kernel.config
+          fi
 
-          echo "========== BUILD OUTPUT =========="
-          find artifacts -type f -printf '%p\n'
+          echo
+          echo "========== ARTIFACTS =========="
+          ls -lah artifacts
 
       - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
-          name: gtowifi-kernel
+          name: GTOWIFI-SM-T290-Kernel
           path: artifacts/
           if-no-files-found: error
           
