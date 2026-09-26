@@ -147,7 +147,38 @@ jobs:
         run: |
           git clone --depth=1 -b "${{ github.event.inputs.kernel_branch || env.KERNEL_BRANCH }}" \
             "${{ env.KERNEL_REPO }}" kernel_source
-
+            
+      - name: Inject Realtek RTL8821AU Driver & NetHunter Patches
+        working-directory: kernel_source
+        run: |
+          DEFCONFIG_PATH="arch/arm64/configs/${{ env.DEFCONFIG }}"
+          echo "=== Patching Defconfig for NetHunter & Wireless Infrastructure ==="
+          
+          # 1. Enable Core Networking, Mac80211, and Packet Injection requirements
+          echo "CONFIG_WIRELESS=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_CFG80211=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_MAC80211=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_MAC80211_LEDS=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_CFG80211_WEXT=y" >> $DEFCONFIG_PATH
+          
+          # Enable standard USB wireless driver ecosystem
+          echo "CONFIG_USB_NET_DRIVERS=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_WLAN_VENDOR_REALTEK=y" >> $DEFCONFIG_PATH
+          
+          # 2. Pull the modern RTL8821AU/8812AU injection driver source code
+          echo "=== Cloning out-of-tree RTL8821AU Driver ==="
+          git clone --depth=1 https://github.com/aircrack-ng/rtl8812au.git drivers/net/wireless/realtek/rtl8821au
+          
+          # 3. Hook the driver into the kernel's compilation tree build system
+          echo "obj-\$(CONFIG_RTL8812AU) += rtl8821au/" >> drivers/net/wireless/realtek/Makefile
+          echo 'source "drivers/net/wireless/realtek/rtl8821au/Kconfig"' >> drivers/net/wireless/realtek/Kconfig
+          
+          # 4. Activate the newly added driver configuration keys inside your tablet's defconfig
+          echo "CONFIG_RTL8812AU=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_USER_SPACE_DRIVER=y" >> $DEFCONFIG_PATH
+          
+          echo "=== Setup Completed ==="
+          
       - name: List available defconfigs (sanity check)
         working-directory: kernel_source
         run: |
@@ -330,7 +361,7 @@ jobs:
 
       # ... (rest of your build steps above) ...
 
-      - name: Package flashable zip with AnyKernel3
+            - name: Package flashable zip with AnyKernel3
         run: |
           # 1. Clone the template repository
           git clone --depth=1 ${{ env.ANYKERNEL_REPO }} anykernel3_workspace
@@ -343,7 +374,11 @@ jobs:
           cp ../kernel_source/out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb || \
           cp ../kernel_source/out/arch/arm64/boot/Image.gz ./Image.gz
           
-          # 4. Configure anykernel.sh variables for your device
+          # 4. CRITICAL: Inject newly built internal Wi-Fi modules so they match the kernel signature
+          mkdir -p modules/vendor/lib/modules
+          find ../kernel_source/out/ -name "*.ko" -exec cp {} ./modules/vendor/lib/modules/ \;
+          
+          # 5. Configure anykernel.sh variables for your device
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for Galaxy Tab A 8.0/g' anykernel.sh
           
           # Inject multiple codename variants to catch whatever your ROM uses in build.prop
@@ -353,8 +388,9 @@ jobs:
           sed -i 's/BLOCK=.*/BLOCK=auto;/g' anykernel.sh
           sed -i 's/IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' anykernel.sh
           
-          # 5. Compress into the final flashable zip file
+          # 6. Compress into the final flashable zip file
           zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
+
 
       - name: Upload Flashable Kernel Zip File
         uses: actions/upload-artifact@v4
