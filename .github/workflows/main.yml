@@ -185,15 +185,29 @@ jobs:
           # Clean placeholder fields out of target deployment layers
           rm -f AnyKernel3/README.md AnyKernel3/modules/system/lib/modules/placeholder.bin
           
-          # --- ADD THIS LINE RIGHT HERE ---
-          # Disables the strict AnyKernel string match check so it accepts your build
+          # 1. Disable the device model check safety override
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          
+          # 2. Configure AnyKernel3 to look for the correct boot block path format.
+          # We use "auto" for the block string so AnyKernel3 automatically crawls 
+          # your device's /dev/block directory tree to find your specific boot partition.
+          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=auto;|g' AnyKernel3/anykernel.sh
+          
+          # 3. Explicitly configure your Qualcomm device partition configurations
+          sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+          
+          # 4. SAMSUNG GTOWIFI SPECIFIC BUGFIX:
+          # Tells AnyKernel3 to append Samsung's required verification trailing metadata 
+          # (SEANDROIDENFORCE + SignerVer02 signatures) onto your newly generated image. 
+          # Without this, the Tab A bootloader will throw a "Secure Check Fail: boot.img" error.
+          sed -i 's/block;$/block;\n\n# Samsung Security Metadata Signature Injection\nappend_seandroidenforce=1/' AnyKernel3/anykernel.sh
           
           # Move target core binary output directly to root level folder
           cp kernel_source/${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           
           cd AnyKernel3
           zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
+          
           
           
       - name: Archive Production Release Artifacts
