@@ -68,7 +68,7 @@ on:
 env:
   DEVICE_CODENAME: gtowifi
   DEFCONFIG: lineageos_gtowifi_defconfig
-  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
+  KERNEL_REPO: https://github.com/devankv84-rgb/android_kernel_samsung_sdm429.git
   KERNEL_BRANCH: lineage-22.2
   NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
   RTL8821AU_REPO: https://github.com/morrownr/8821au-20210708.git
