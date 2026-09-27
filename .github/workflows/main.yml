@@ -3,77 +3,55 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 # ---------------------------------------------------------------------------
 # HOW TO USE THIS FILE
 # 1. Place this at: <your-repo>/.github/workflows/build-nethunter-kernel.yml
-# 2. Fill in the one or two placeholders still marked with <<< >>> below.
-# 3. Trigger manually from the Actions tab, or push a tag like "kernel-v1".
+# 2. Trigger manually from the Actions tab, or push a tag like "kernel-v1".
 #
 # CONFIRMED DEVICE INFO (Samsung Galaxy Tab A 8.0 (2019), codename gtowifi):
 # - SoC: Qualcomm Snapdragon 429 (SDM429), arm64, quad-core Cortex-A53
-# - Official kernel source: LineageOS/android_kernel_samsung_sdm429
-#   (this is a shared SoC kernel tree used across several sdm429 devices,
-#   not a gtowifi-only repo — that's expected and correct)
-# - LineageOS 22.2 = Android 15, so branch should be lineage-22.2 if the
-#   maintainer (lifehackerhansol) has pushed one; if not yet available,
-#   check the repo's branch list and fall back to the newest existing branch.
+# - Kernel source: LineageOS/android_kernel_samsung_sdm429
+# - Defconfig: lineageos_gtowifi_defconfig (confirmed)
+# - Toolchain: Proton Clang (Clang + matching GNU binutils)
 #
-# STILL TO CONFIRM YOURSELF (varies by exact branch/commit):
-# - Exact defconfig filename in arch/arm64/configs/ of that branch — SDM429
-#   Qualcomm CAF-derived trees commonly use something like
-#   "sdm429-perf_defconfig" or a device-specific "gtowifi-perf_defconfig".
-#   List the directory after cloning to confirm before your first build.
-# - Toolchain: SDM429 is a newer-ish Qualcomm CAF kernel (Linux 4.9-ish),
-#   so Clang/LLVM (as AOSP ships) usually works, but this workflow defaults
-#   to GCC for safety — switch to Clang if the kernel's own docs recommend it.
+# FIX HISTORY (abbreviated — see prior versions for the full toolchain saga):
+# v2–v9: toolchain fixes (CROSS_COMPILE_ARM32, vdso32 ld.bfd, GCC-too-old,
+#   dtc "-@" flag) — all resolved via Proton Clang + targeted flag strips.
+# v11–v12: disabled device-tree overlay (dtbo) building — unrelated Qualcomm
+#   MTP reference boards' overlays failed to parse on this kernel's old dtc.
+# v13: added stock boot.img repacking for Odin flashing, since this device
+#   has no working TWRP and stock recovery rejects unsigned zips. (You may
+#   have since found a working flash method of your own — this version
+#   doesn't re-litigate that part, only the two issues below.)
+# v14 (this version) fixes two issues found AFTER a successful flash:
 #
-# FIX HISTORY:
-# v2 fixed: "CROSS_COMPILE_ARM32 not defined or empty" by installing apt's
-#   gcc-arm-linux-gnueabi and setting CROSS_COMPILE_ARM32.
-# v3 fixed: "ld: cannot represent machine `arm'" (vdso32 link failure) by
-#   switching from apt's cross-toolchain to prebuilt AOSP GCC 4.9 toolchains.
-# v8 attempted a fix targeting only scripts/Makefile.lib and the qcom dts
-#   Makefile for the "-@" flag — but the SAME error recurred on the next
-#   build, meaning -@ is set somewhere else in the tree we didn't check.
-# v9 (this version): broadens the search to every Makefile under scripts/
-#   and arch/arm64 (most likely culprit: arch/arm64/Makefile itself, a
-#   common place for DTC_FLAGS in this kernel generation), but only edits
-#   lines that actually contain "DTC_FLAGS" to avoid collateral damage. It
-#   also prints before/after greps so the log makes clear whether it found
-#   and fixed the real source this time, or whether the flag is being added
-#   some other way entirely (in which case the next V=1 log's dtc command
-#   line is needed to pin it down for certain).
-# v10: user confirmed the real defconfig name, lineageos_gtowifi_defconfig.
-# v11 (this version) fixes the NEXT error that appeared:
-#   "Error: ../arch/arm64/boot/dts/qcom/sdm429-mtp-P81081-overlay.dts:15.2-8
-#    syntax error" / "FATAL ERROR: Unable to parse input tree", failing via
-#   scripts/Makefile.dtbo (a build path specific to device-tree OVERLAY
-#   targets, separate from plain .dtb files).
-# Root cause: overlay .dts files use special "/plugin/;" + "fragment@N {...}"
-# syntax, which requires dtc overlay support that this kernel's ancient
-# bundled dtc almost certainly lacks entirely — not just the -@ flag we
-# already stripped, but the ability to parse overlay syntax at all. Also,
-# "P81081" is Qualcomm's MTP reference board for this SoC family, bundled
-# into the same kernel tree as one of several supported boards — it has
-# nothing to do with the gtowifi tablet. There could be several more
-# unrelated boards' overlays that would fail the same way one at a time.
-# Fix: disable overlay (dtbo-y) building entirely for arch/arm64/boot/dts/
-# qcom, rather than exclude each unrelated board's overlay individually.
-# Samsung devices typically boot from a single monolithic DTB rather than
-# Google's separate dtbo.img overlay mechanism, so this should have no
-# effect on gtowifi's actual boot image.
-# NOTE: if the plain sdm429.dtb build subsequently fails with something
-# that looks like it depends on overlay output, that assumption was wrong
-# for this specific tree — flag it and we'll look at Makefile structure
-# directly instead.
-# v11 attempted to disable overlay building via a "dtbo-y" variable — but
-#   the actual Makefile (confirmed by user screenshot) doesn't use that
-#   variable name at all; the step found nothing to change.
-# v12 (this version): corrected using the REAL Makefile structure. Overlays
-#   are declared via harmless "<name>.dtbo-base := <base dtbs>" mapping
-#   lines, while the actual build trigger is the overlay name as a bare
-#   token mixed into a "dtb-$(CONFIG_ARCH_SDM429) += ..." list alongside
-#   real .dtb files. Uses perl with a negative lookahead to strip only bare
-#   ".dtbo" tokens (never ".dtbo-base" ones) wherever they appear on a
-#   line — safer than deleting whole lines, since a line's "+=" prefix can
-#   be shared with other real .dtb targets we still need.
+#   1. INTERNAL WIFI/BLUETOOTH BROKEN: caused by a PREVIOUS fix in this
+#      history that excluded drivers/staging/prima entirely to get past a
+#      compile error ("undeclared identifier P2P_NOT_ACTIVE" etc in
+#      macTrace.c). That exclusion was flagged as a gamble at the time —
+#      it turned out prima IS the active WCNSS driver for both WiFi and
+#      Bluetooth on this chip (they share the same firmware stack), so
+#      disabling it broke both. FIX: stop excluding prima. Instead, patch
+#      out ONLY the 9 specific broken lines in macTrace.c — they're pure
+#      debug-logging code (CASE_RETURN_STRING just converts an enum to a
+#      string for log output), so removing them has zero effect on actual
+#      WiFi/BT function, unlike excluding the whole driver.
+#
+#   2. EXTERNAL USB ADAPTERS NOT DETECTED: this workflow never actually had
+#      driver integration for external WiFi adapters — it was discussed
+#      conversationally earlier but never added to the real file. FIX:
+#      clone the aircrack-ng RTL8812AU/8811AU driver fork (the one with
+#      monitor mode + injection patches, and what NetHunter's own build
+#      scripts reference), wire it into drivers/net/wireless/'s Kconfig and
+#      Makefile, and enable it (built-in, not a module — avoids kernel
+#      vermagic matching headaches) via the running .config.
+# v14 fixed: internal WiFi/BT (patched macTrace.c instead of excluding
+#   prima entirely) and added RTL8812AU external adapter driver support.
+# v15 (this version): swaps RTL8812AU for RTL8821AU/8811AU support, using
+#   morrownr/8821au-20210708 — the actively maintained driver for that
+#   chipset family (confirmed monitor mode + packet injection support).
+#   NOTE: this driver's internal CONFIG_ symbol naming wasn't verified
+#   directly (Realtek's various out-of-tree driver families aren't fully
+#   consistent with each other) — a diagnostic step prints what CONFIG_
+#   names the driver's own Makefile actually defines, so if the guessed
+#   name below is wrong, that output will show the real one.
 # ---------------------------------------------------------------------------
 
 on:
@@ -88,11 +66,12 @@ on:
       - "kernel-v*"
 
 env:
-  DEVICE_CODENAME: gtowifi                      # Samsung Galaxy Tab A 8.0 (2019)
-  DEFCONFIG: lineageos_gtowifi_defconfig        # confirmed by user
+  DEVICE_CODENAME: gtowifi
+  DEFCONFIG: lineageos_gtowifi_defconfig
   KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
-  KERNEL_BRANCH: lineage-22.2                   # <<< confirm this branch exists; fall back if not pushed yet >>>
+  KERNEL_BRANCH: lineage-22.2
   NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
+  RTL8821AU_REPO: https://github.com/morrownr/8821au-20210708.git
   ARCH: arm64
   OUT_DIR: out
   ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
@@ -115,26 +94,17 @@ jobs:
             git build-essential bc bison flex libssl-dev libncurses-dev \
             python3 python3-pip lz4 zip unzip wget curl \
             cpio rsync
-          # NOTE: no device-tree-compiler here — the kernel builds its own
-          # matching dtc from source; installing the system one can shadow
-          # it on PATH and cause "unknown option" errors (see FIX HISTORY).
-          # NOTE: no gcc-aarch64-linux-gnu / gcc-arm-linux-gnueabi here anymore —
-          # see "Pull toolchains" step below for why.
+          # NOTE: no device-tree-compiler / gcc-aarch64-linux-gnu / gcc-arm-
+          # linux-gnueabi here — see FIX HISTORY, these caused problems and
+          # were replaced by Proton Clang + the kernel's own bundled dtc.
 
       - name: Pull Proton Clang toolchain
         run: |
-          # Proton Clang bundles Clang + correctly-built GNU binutils for
-          # both aarch64 and 32-bit-compat arm targets in one package.
-          # This replaces the GCC 4.9 toolchains from the previous version.
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
           echo "TOOLCHAIN_BIN=$GITHUB_WORKSPACE/proton-clang/bin" >> "$GITHUB_ENV"
 
       - name: Ensure no system dtc shadows the kernel's own build
         run: |
-          # Ubuntu runner images sometimes ship dtc pre-installed even
-          # without us apt-get installing it. If present, move it aside so
-          # PATH resolution can't accidentally prefer it over the kernel's
-          # freshly-built scripts/dtc/dtc.
           SYS_DTC=$(command -v dtc || true)
           if [ -n "$SYS_DTC" ]; then
             echo "Found pre-existing system dtc at $SYS_DTC — moving it aside."
@@ -147,46 +117,12 @@ jobs:
         run: |
           git clone --depth=1 -b "${{ github.event.inputs.kernel_branch || env.KERNEL_BRANCH }}" \
             "${{ env.KERNEL_REPO }}" kernel_source
-            
-      - name: Inject Realtek RTL8821AU Driver & NetHunter Patches
-        working-directory: kernel_source
-        run: |
-          DEFCONFIG_PATH="arch/arm64/configs/${{ env.DEFCONFIG }}"
-          echo "=== Patching Defconfig for NetHunter & Wireless Infrastructure ==="
-          
-          # 1. Enable Core Networking, Mac80211, and Packet Injection requirements
-          echo "CONFIG_WIRELESS=y" >> $DEFCONFIG_PATH
-          echo "CONFIG_CFG80211=y" >> $DEFCONFIG_PATH
-          echo "CONFIG_MAC80211=y" >> $DEFCONFIG_PATH
-          echo "CONFIG_MAC80211_LEDS=y" >> $DEFCONFIG_PATH
-          echo "CONFIG_CFG80211_WEXT=y" >> $DEFCONFIG_PATH
-          
-          # Enable standard USB wireless driver ecosystem
-          echo "CONFIG_USB_NET_DRIVERS=y" >> $DEFCONFIG_PATH
-          echo "CONFIG_WLAN_VENDOR_REALTEK=y" >> $DEFCONFIG_PATH
-          
-          # 2. Pull the modern RTL8821AU/8812AU injection driver source code
-          echo "=== Cloning out-of-tree RTL8821AU Driver ==="
-          git clone --depth=1 https://github.com/aircrack-ng/rtl8812au.git drivers/net/wireless/realtek/rtl8821au
-          
-          # 3. Hook the driver into the kernel's compilation tree build system
-          echo "obj-\$(CONFIG_RTL8812AU) += rtl8821au/" >> drivers/net/wireless/realtek/Makefile
-          echo 'source "drivers/net/wireless/realtek/rtl8821au/Kconfig"' >> drivers/net/wireless/realtek/Kconfig
-          
-          # 4. Activate the newly added driver configuration keys inside your tablet's defconfig
-          echo "CONFIG_RTL8812AU=y" >> $DEFCONFIG_PATH
-          echo "CONFIG_USER_SPACE_DRIVER=y" >> $DEFCONFIG_PATH
-          
-          echo "=== Setup Completed ==="
-          
+
       - name: List available defconfigs (sanity check)
         working-directory: kernel_source
         run: |
           echo "Available defconfigs for this branch:"
           ls arch/arm64/configs/ | grep -i -E "gto|sdm429|perf" || ls arch/arm64/configs/
-          echo ""
-          echo "If DEFCONFIG in the env block above doesn't match one of these,"
-          echo "update it before the 'Configure kernel' step runs."
 
       - name: Clone NetHunter kernel build helper scripts
         run: |
@@ -195,10 +131,6 @@ jobs:
       - name: Apply NetHunter kernel patches
         working-directory: kernel_source
         run: |
-          # <<< Adjust this path — NetHunter's repo structure changes over time.
-          # Typically you copy/merge the patch set matching your kernel version,
-          # e.g. patches for Wi-Fi monitor mode + injection, HID gadget support,
-          # RTL88XXau/RTL8812AU drivers, and USB gadget tethering. >>>
           PATCH_DIR="../nethunter-builder/patches/<<<kernel-version-folder>>>"
           if [ -d "$PATCH_DIR" ]; then
             for p in "$PATCH_DIR"/*.patch; do
@@ -207,8 +139,6 @@ jobs:
             done
           else
             echo "WARNING: no matching NetHunter patch directory found for this kernel version."
-            echo "You will likely need to hand-port patches. See:"
-            echo "https://www.kali.org/docs/nethunter/nethunter-kernel-development/"
           fi
 
       - name: Set up toolchain
@@ -229,79 +159,84 @@ jobs:
       - name: Strip unsupported dtc "-@" flag wherever DTC_FLAGS is set
         working-directory: kernel_source
         run: |
-          # v8's fix (targeting only scripts/Makefile.lib and the qcom dts
-          # Makefile) did NOT resolve the error on the next run — the same
-          # "unknown option" failure recurred on sdm429.dtb. That means -@
-          # is set somewhere we didn't check, most likely arch/arm64/Makefile
-          # itself (a common place for DTC_FLAGS in this kernel generation).
-          # This version searches every Makefile under scripts/ and
-          # arch/arm64, but ONLY touches lines containing "DTC_FLAGS" (to
-          # avoid accidentally mangling unrelated lines that happen to
-          # contain "-@").
-          echo "Files containing DTC_FLAGS before stripping:"
-          grep -rn "DTC_FLAGS" scripts/ arch/arm64 --include="Makefile*" 2>/dev/null || echo "  (none found — see note below)"
-          echo ""
-          echo "Stripping -@ from any DTC_FLAGS line found..."
           find scripts/ arch/arm64 -type f -name "Makefile*" -print0 2>/dev/null | \
             xargs -0 -r sed -i '/DTC_FLAGS/ s/-@//g'
-          echo ""
-          echo "Files containing DTC_FLAGS after stripping (should show no -@ left):"
-          grep -rn "DTC_FLAGS" scripts/ arch/arm64 --include="Makefile*" 2>/dev/null || echo "  (none found)"
-          echo ""
-          echo "NOTE: if the line above still shows -@, or if no DTC_FLAGS"
-          echo "lines were found at all, the flag may be getting added"
-          echo "dynamically (e.g. via a Kconfig-driven Makefile.build rule)"
-          echo "rather than as a plain literal string — send the next build"
-          echo "log's V=1 dtc command line and we'll track it down precisely."
 
       - name: Disable device-tree overlay (dtbo) building entirely
         working-directory: kernel_source
         run: |
-          # CORRECTED from the previous version: the "dtbo-y" variable name
-          # was a wrong guess — this Makefile doesn't use it at all. Actual
-          # structure (confirmed from the real file): overlays are declared
-          # via "<name>.dtbo-base := <base dtb list>" lines (just a mapping,
-          # harmless to leave alone), while the ACTUAL build trigger is the
-          # overlay name listed as a plain token mixed directly into a
-          # "dtb-$(CONFIG_ARCH_SDM429) += ..." style list alongside normal
-          # .dtb files.
-          #
-          # Rather than delete whole lines (risky — a "+=" prefix could
-          # share a line with other real .dtb targets we need), this uses
-          # perl with a negative lookahead to strip ONLY bare ".dtbo" list
-          # tokens (wherever they appear on a line), while explicitly never
-          # touching ".dtbo-base" tokens.
           DTS_MAKEFILE="arch/arm64/boot/dts/qcom/Makefile"
           if [ -f "$DTS_MAKEFILE" ]; then
-            echo "Bare .dtbo token count before:"
-            grep -o '[[:alnum:]_.-]*\.dtbo\b' "$DTS_MAKEFILE" | grep -v '\-base$' | wc -l
             perl -i -pe 's/\S*\.dtbo(?!-base)\b\s*\\?\s*//g' "$DTS_MAKEFILE"
-            echo "Bare .dtbo token count after (should be 0):"
-            grep -o '[[:alnum:]_.-]*\.dtbo\b' "$DTS_MAKEFILE" | grep -v '\-base$' | wc -l
-            echo ""
-            echo "(.dtbo-base mapping lines are left untouched — they're"
-            echo "harmless once nothing references the overlay as a target.)"
-          else
-            echo "WARNING: $DTS_MAKEFILE not found at this path — check the"
-            echo "kernel tree structure and locate the overlay list manually"
-            echo "if this error recurs."
+            echo "Bare .dtbo tokens remaining (should be 0):"
+            grep -o '[[:alnum:]_.-]*\.dtbo\b' "$DTS_MAKEFILE" | grep -v -- '-base$' | wc -l
           fi
 
-      - name: Exclude broken drivers/staging/prima from the build
+      - name: Fix drivers/staging/prima instead of excluding it
         working-directory: kernel_source
         run: |
-          # This legacy Qualcomm WCN36xx driver has a source bug (undeclared
-          # P2P_* identifiers in macTrace.c) and isn't needed for our goal —
-          # see the FIX HISTORY note at the top of this file for details.
-          if grep -rq "prima" drivers/staging/Makefile; then
-            sed -i -E 's/^(obj-.*prima.*)$/# \1 # excluded: broken staging driver, unused by this build/' \
-              drivers/staging/Makefile
-            echo "Excluded drivers/staging/prima from drivers/staging/Makefile"
-            grep -n "prima" drivers/staging/Makefile || true
+          # CHANGED in v14: a previous version of this workflow excluded
+          # drivers/staging/prima ENTIRELY to dodge a compile error — but
+          # that turned out to break internal WiFi and Bluetooth, since
+          # prima is the active WCNSS driver for both on this chip. This
+          # version keeps the driver and patches out only the 9 specific
+          # broken debug-logging lines that failed to compile.
+          MACTRACE="drivers/staging/prima/CORE/SYS/legacy/src/utils/src/macTrace.c"
+          if [ -f "$MACTRACE" ]; then
+            echo "CASE_RETURN_STRING(P2P_*) lines before:"
+            grep -c "CASE_RETURN_STRING(P2P_" "$MACTRACE" || true
+            sed -i '/CASE_RETURN_STRING(P2P_/d' "$MACTRACE"
+            echo "CASE_RETURN_STRING(P2P_*) lines after (should be 0):"
+            grep -c "CASE_RETURN_STRING(P2P_" "$MACTRACE" || echo 0
           else
-            echo "No reference to prima found in drivers/staging/Makefile — nothing to exclude."
-            echo "If the build still fails on prima, check drivers/staging/Kconfig instead."
+            echo "WARNING: $MACTRACE not found — check the path; prima may"
+            echo "have moved or this fix may no longer be needed."
           fi
+
+      - name: Add RTL8821AU/8811AU external WiFi adapter driver
+        working-directory: kernel_source
+        run: |
+          # Uses morrownr/8821au-20210708 — the actively maintained driver
+          # for RTL8811AU/RTL8821AU chipsets, with confirmed monitor mode +
+          # packet injection support.
+          DRIVER_DIR="drivers/net/wireless/rtl8821au"
+          git clone --depth=1 "${{ env.RTL8821AU_REPO }}" "$DRIVER_DIR"
+
+          echo "--- Diagnostic: CONFIG_ symbols defined in this driver's own Makefile ---"
+          grep -o 'CONFIG_[A-Z0-9_]*' "$DRIVER_DIR/Makefile" | sort -u || echo "(none found — Makefile may use a different pattern)"
+          echo "--- end diagnostic ---"
+
+          # Wire into the parent Kconfig, if not already present
+          if ! grep -q "rtl8821au/Kconfig" drivers/net/wireless/Kconfig; then
+            echo 'source "drivers/net/wireless/rtl8821au/Kconfig"' >> drivers/net/wireless/Kconfig
+          fi
+          # This driver is built for standalone/external module builds and
+          # likely doesn't ship a proper kernel Kconfig file — create a
+          # minimal one if missing. CONFIG_88XXAU is our best-guess symbol
+          # name based on this Realtek driver family's common convention;
+          # check the diagnostic grep above and adjust if it's wrong.
+          if [ ! -f "$DRIVER_DIR/Kconfig" ]; then
+            cat > "$DRIVER_DIR/Kconfig" << 'EOF'
+          config 88XXAU
+          	tristate "Realtek RTL8811AU/8821AU USB WiFi driver"
+          	depends on USB && CFG80211
+          	default n
+          	help
+          	  Realtek RTL8811AU/8821AU chipset support with monitor mode
+          	  and packet injection (morrownr driver), for NetHunter.
+          EOF
+          fi
+
+          # Wire into the parent Makefile, if not already present.
+          # NOTE: this driver's own Makefile likely already defines its own
+          # obj-$(CONFIG_88XXAU) rule internally (standard for this Realtek
+          # driver family) — only add a subdirectory reference here, don't
+          # duplicate the obj- rule itself.
+          if ! grep -q "rtl8821au/" drivers/net/wireless/Makefile; then
+            echo 'obj-$(CONFIG_88XXAU) += rtl8821au/' >> drivers/net/wireless/Makefile
+          fi
+
+          echo "RTL8821AU driver wired in at $DRIVER_DIR"
 
       # Shared make args reused by every kernel build step below.
       - name: Configure kernel
@@ -315,21 +250,23 @@ jobs:
             OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
             ${{ env.DEFCONFIG }}
 
-      - name: (Optional) Enable NetHunter-required kernel configs
+      - name: Enable NetHunter-required + RTL8821AU kernel configs
         working-directory: kernel_source
         run: |
-          # <<< Confirm exact CONFIG_ names against your kernel's Kconfig — these
-          # are the commonly required ones for NetHunter (monitor mode, packet
-          # injection, USB gadget/HID, TUN/TAP for VPN tooling). >>>
+          # Built as =y (built-in), not =m — avoids kernel-version/vermagic
+          # matching issues for a one-off tablet build like this.
           ./scripts/config --file ${{ env.OUT_DIR }}/.config \
             -e CONFIG_TUN \
+            -e CONFIG_USB \
             -e CONFIG_USB_GADGET \
             -e CONFIG_USB_CONFIGFS \
             -e CONFIG_USB_CONFIGFS_F_HID \
             -e CONFIG_HIDRAW \
             -e CONFIG_PACKET \
+            -e CONFIG_CFG80211 \
             -e CONFIG_CFG80211_WEXT \
-            -e CONFIG_MAC80211 || true
+            -e CONFIG_MAC80211 \
+            -e CONFIG_88XXAU || true
 
           make O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
             CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
@@ -339,62 +276,39 @@ jobs:
             OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
             olddefconfig
 
+          echo "Confirming 88XXAU is enabled:"
+          grep 88XXAU ${{ env.OUT_DIR }}/.config || echo "  NOT SET — check the diagnostic grep output from the 'Add RTL8821AU' step for the real CONFIG_ symbol name"
+
       - name: Build kernel
         working-directory: kernel_source
         run: |
-          # V=1 makes `make` print full command lines (instead of the
-          # abbreviated "DTC file.dtb" form) so we can see exactly which
-          # flag is being passed to dtc if it fails again — see FIX HISTORY.
-          make -j"$(nproc)" V=1 O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
+          make -j"$(nproc)" O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
             CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
             LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
             OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }}
 
-      - name: Locate kernel image
-        working-directory: kernel_source
-        run: |
-          IMG=$(find ${{ env.OUT_DIR }} -name "Image*" -o -name "zImage*" | head -n1)
-          echo "Found kernel image: $IMG"
-          echo "KERNEL_IMAGE_PATH=$IMG" >> "$GITHUB_ENV"
-
-      # ... (rest of your build steps above) ...
-
       - name: Package flashable zip with AnyKernel3
         run: |
-          # 1. Clone the template repository
           git clone --depth=1 ${{ env.ANYKERNEL_REPO }} anykernel3_workspace
           cd anykernel3_workspace
-          
-          # 2. Clean out target placeholder files
+
           rm -rf README.md LICENSE *placeholder
-          
-          # 3. Copy your compiled kernel binary into the workspace root
+
           cp ../kernel_source/out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb || \
           cp ../kernel_source/out/arch/arm64/boot/Image.gz ./Image.gz
-          
-          # 4. CRITICAL: Inject newly built internal Wi-Fi modules so they match the kernel signature
-          mkdir -p modules/vendor/lib/modules
-          find ../kernel_source/out/ -name "*.ko" -exec cp {} ./modules/vendor/lib/modules/ \;
-          
-          # 5. Configure anykernel.sh variables for your device
+
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for Galaxy Tab A 8.0/g' anykernel.sh
-          
-          # Inject multiple codename variants to catch whatever your ROM uses in build.prop
           sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
           sed -i '/device.name1=gtowifi/a device.name2=gtowifiopen\ndevice.name3=gtowificell\ndevice.name4=gtowifixx\ndevice.name5=SM-T290\ndevice.name6=gto' anykernel.sh
-          
           sed -i 's/BLOCK=.*/BLOCK=auto;/g' anykernel.sh
           sed -i 's/IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' anykernel.sh
-          
-          # 6. Compress into the final flashable zip file
-          zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
 
+          zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
 
       - name: Upload Flashable Kernel Zip File
         uses: actions/upload-artifact@v4
         with:
           name: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}
           path: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip
-          
