@@ -72,6 +72,18 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 #   KCFLAGS="-Wno-unknown-warning-option" to this build specifically, so
 #   Clang stops treating any further GCC-only flags in this file as fatal,
 #   rather than deleting each one individually as they turn up.
+# v19 (this version): KCFLAGS got past the flag issue, but hit a genuine
+#   kernel-API version mismatch: this kernel's cfg80211.h declares the
+#   MODERN 3-argument cfg80211_roamed(dev, struct cfg80211_roam_info*, gfp),
+#   but the driver's ioctl_cfg80211.c still calls the OLD 8-positional-
+#   argument form. This exact break is well-documented across sibling
+#   Realtek drivers (rtl8723bs, rtl8812au) with an identical established
+#   fix. Added a new step, run right after cloning the driver and before
+#   building it, that patches this call using bracket-matching (not a
+#   fragile exact-text sed) to wrap the old arguments into a local struct
+#   and call the modern 3-arg form. Flagged as the most surgical, least-
+#   verified fix in this whole history — check its log output (it prints
+#   what it found and changed) if the build still fails at this spot.
 # ---------------------------------------------------------------------------
 
 on:
@@ -271,6 +283,106 @@ jobs:
           # treating unrecognized -W flags as fatal for this build.
           git clone --depth=1 "${{ env.RTL8821AU_REPO }}" rtl8821au_driver
 
+      - name: Patch cfg80211_roamed() for this kernel's newer cfg80211 API
+        run: |
+          # This kernel's cfg80211.h declares the MODERN 3-argument
+          # cfg80211_roamed(dev, struct cfg80211_roam_info *info, gfp) —
+          # but this driver's ioctl_cfg80211.c still calls it with the OLD
+          # 8-positional-argument form (dev, channel, bssid, req_ie,
+          # req_ie_len, resp_ie, resp_ie_len, gfp). This exact break is
+          # well-documented across sibling Realtek drivers (rtl8723bs,
+          # rtl8812au) with an identical, established fix: wrap the old
+          # arguments into a local struct cfg80211_roam_info and call the
+          # 3-argument form instead.
+          #
+          # This patch finds the call by bracket-matching (robust to minor
+          # formatting differences between driver forks) rather than a
+          # fragile exact-text sed, since the precise surrounding text in
+          # THIS specific fork wasn't directly verified before writing this.
+          python3 - << 'PYEOF'
+          import re, sys
+
+          path = "rtl8821au_driver/os_dep/linux/ioctl_cfg80211.c"
+          with open(path) as f:
+              src = f.read()
+
+          start = src.find("cfg80211_roamed(")
+          if start == -1:
+              print("WARNING: 'cfg80211_roamed(' not found — driver source may")
+              print("have changed. Skipping patch; the build will show the")
+              print("real error again if this is still needed.")
+              sys.exit(0)
+
+          # Find the matching closing paren for this call by depth-counting,
+          # then the terminating semicolon right after it.
+          i = start + len("cfg80211_roamed(")
+          depth = 1
+          while depth > 0:
+              if src[i] == '(':
+                  depth += 1
+              elif src[i] == ')':
+                  depth -= 1
+              i += 1
+          end_paren = i  # index just past the matching ')'
+          end_semi = src.find(';', end_paren) + 1
+
+          old_call = src[start:end_semi]
+          args_raw = src[start + len("cfg80211_roamed("):end_paren - 1]
+
+          # Split top-level args on commas (ignoring commas inside nested parens)
+          args = []
+          depth = 0
+          cur = ""
+          for ch in args_raw:
+              if ch == '(':
+                  depth += 1
+              elif ch == ')':
+                  depth -= 1
+              if ch == ',' and depth == 0:
+                  args.append(cur.strip())
+                  cur = ""
+              else:
+                  cur += ch
+          if cur.strip():
+              args.append(cur.strip())
+          args = [a for a in args if a and not a.startswith('#')]
+
+          print(f"Found cfg80211_roamed() call with {len(args)} arguments:")
+          for a in args:
+              print("  -", a.replace("\n", " ").strip())
+
+          if len(args) < 7:
+              print("WARNING: fewer arguments than expected for the known old-API")
+              print("pattern — skipping automatic rewrite to avoid corrupting the")
+              print("file. Manual inspection needed.")
+              sys.exit(0)
+
+          # Canonical old-API argument order for this Realtek driver lineage:
+          # dev, channel, bssid, req_ie, req_ie_len, resp_ie, resp_ie_len, gfp
+          dev, channel, bssid, req_ie, req_ie_len, resp_ie, resp_ie_len, gfp = (
+              args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+              args[7] if len(args) > 7 else "GFP_ATOMIC"
+          )
+
+          new_call = f"""{{
+          \tstruct cfg80211_roam_info roam_info;
+          \tmemset(&roam_info, 0, sizeof(roam_info));
+          \troam_info.channel = {channel};
+          \troam_info.bssid = {bssid};
+          \troam_info.req_ie = {req_ie};
+          \troam_info.req_ie_len = {req_ie_len};
+          \troam_info.resp_ie = {resp_ie};
+          \troam_info.resp_ie_len = {resp_ie_len};
+          \tcfg80211_roamed({dev}, &roam_info, {gfp});
+          }}"""
+
+          src = src[:start] + new_call + src[end_semi:]
+          with open(path, "w") as f:
+              f.write(src)
+
+          print("Patched cfg80211_roamed() call to use the modern struct-based API.")
+          PYEOF
+
           make -C "$GITHUB_WORKSPACE/rtl8821au_driver" \
             KSRC="$GITHUB_WORKSPACE/kernel_source/${{ env.OUT_DIR }}" \
             ARCH=${{ env.ARCH }} \
@@ -297,21 +409,4 @@ jobs:
 
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for Galaxy Tab A 8.0/g' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
-          sed -i '/device.name1=gtowifi/a device.name2=gtowifiopen\ndevice.name3=gtowificell\ndevice.name4=gtowifixx\ndevice.name5=SM-T290\ndevice.name6=gto' anykernel.sh
-          sed -i 's/BLOCK=.*/BLOCK=auto;/g' anykernel.sh
-          sed -i 's/IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' anykernel.sh
-
-          # Bundle the .ko so it travels with the kernel zip, even though it
-          # still needs manual insmod on-device — see chat notes on loading it.
-          mkdir -p modules
-          cp ../rtl8821au_driver/*.ko ./modules/ 2>/dev/null || echo "No .ko found to bundle — check the RTL8821AU build step output."
-
-          zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
-
-      - name: Upload Flashable Kernel Zip File
-        uses: actions/upload-artifact@v4
-        with:
-          name: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}
-          path: |
-            NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip
-            rtl8821au_driver/*.ko
+          sed -i '/device.name1=gtowifi/a device.name2=gtowifiopen\ndevice.name3=gtowificell\ndevice.name4=gtowifixx\ndevice.name
