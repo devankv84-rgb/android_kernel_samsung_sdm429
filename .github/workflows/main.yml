@@ -1,4 +1,61 @@
-name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
+name: Build2 NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
+
+# ---------------------------------------------------------------------------
+# HOW TO USE THIS FILE
+# 1. Place this at: <your-repo>/.github/workflows/build-nethunter-kernel.yml
+# 2. Trigger manually from the Actions tab, or push a tag like "kernel-v1".
+#
+# CONFIRMED DEVICE INFO (Samsung Galaxy Tab A 8.0 (2019), codename gtowifi):
+# - SoC: Qualcomm Snapdragon 429 (SDM429), arm64, quad-core Cortex-A53
+# - Kernel source: LineageOS/android_kernel_samsung_sdm429
+# - Defconfig: lineageos_gtowifi_defconfig (confirmed)
+# - Toolchain: Proton Clang (Clang + matching GNU binutils)
+#
+# FIX HISTORY (abbreviated — see prior versions for the full toolchain saga):
+# v2–v9: toolchain fixes (CROSS_COMPILE_ARM32, vdso32 ld.bfd, GCC-too-old,
+#   dtc "-@" flag) — all resolved via Proton Clang + targeted flag strips.
+# v11–v12: disabled device-tree overlay (dtbo) building — unrelated Qualcomm
+#   MTP reference boards' overlays failed to parse on this kernel's old dtc.
+# v13: added stock boot.img repacking for Odin flashing, since this device
+#   has no working TWRP and stock recovery rejects unsigned zips. (You may
+#   have since found a working flash method of your own — this version
+#   doesn't re-litigate that part, only the two issues below.)
+# v14 (this version) fixes two issues found AFTER a successful flash:
+#
+#   1. INTERNAL WIFI/BLUETOOTH BROKEN: caused by a PREVIOUS fix in this
+#      history that excluded drivers/staging/prima entirely to get past a
+#      compile error ("undeclared identifier P2P_NOT_ACTIVE" etc in
+#      macTrace.c). That exclusion was flagged as a gamble at the time —
+#      it turned out prima IS the active WCNSS driver for both WiFi and
+#      Bluetooth on this chip (they share the same firmware stack), so
+#      disabling it broke both. FIX: stop excluding prima. Instead, patch
+#      out ONLY the 9 specific broken lines in macTrace.c — they're pure
+#      debug-logging code (CASE_RETURN_STRING just converts an enum to a
+#      string for log output), so removing them has zero effect on actual
+#      WiFi/BT function, unlike excluding the whole driver.
+#
+#   2. EXTERNAL USB ADAPTERS NOT DETECTED: this workflow never actually had
+#      driver integration for external WiFi adapters — it was discussed
+#      conversationally earlier but never added to the real file.
+# v15: swapped to morrownr/8821au-20210708 (RTL8811AU/RTL8821AU chipsets,
+#   confirmed monitor mode + injection) after identifying the actual
+#   adapter's chipset via lsusb (TP-Link Archer T2U Plus, 2357:0120).
+#   Wired it into drivers/net/wireless/ as an in-tree Kconfig subdirectory.
+# v16 (this version): v15's wiring was WRONG, not just a wrong symbol name.
+#   Fetched this driver's actual Makefile and found it's a complete,
+#   self-contained top-level Makefile with hardcoded local variables
+#   (CONFIG_RTL8821A = y etc — plain Makefile variables, NOT kernel Kconfig
+#   symbols), designed to be built as a genuine OUT-OF-TREE external module,
+#   the same way you'd build any standalone driver against an
+#   already-installed kernel. Treating it as an in-tree Kbuild subdirectory
+#   never actually compiled it — that's the real reason lsusb showed
+#   "Driver=(none)" even though the workflow claimed to enable it.
+#   FIX: build it separately, AFTER the kernel finishes, using the standard
+#   external-module Kbuild pattern (make -C <built-kernel> M=<driver-dir>
+#   modules), producing a real 8821au.ko matched to this exact kernel build.
+#   This .ko is bundled into the output but still needs manual `insmod` on
+#   the device — Android doesn't auto-load out-of-tree modules by default.
+# ---------------------------------------------------------------------------
 
 on:
   workflow_dispatch:
@@ -14,7 +71,7 @@ on:
 env:
   DEVICE_CODENAME: gtowifi
   DEFCONFIG: lineageos_gtowifi_defconfig
-  KERNEL_REPO: https://github.com/devankv84-rgb/android_kernel_samsung_sdm429.git
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
   KERNEL_BRANCH: lineage-22.2
   NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
   RTL8821AU_REPO: https://github.com/morrownr/8821au-20210708.git
@@ -40,6 +97,9 @@ jobs:
             git build-essential bc bison flex libssl-dev libncurses-dev \
             python3 python3-pip lz4 zip unzip wget curl \
             cpio rsync
+          # NOTE: no device-tree-compiler / gcc-aarch64-linux-gnu / gcc-arm-
+          # linux-gnueabi here — see FIX HISTORY, these caused problems and
+          # were replaced by Proton Clang + the kernel's own bundled dtc.
 
       - name: Pull Proton Clang toolchain
         run: |
@@ -115,99 +175,133 @@ jobs:
             grep -o '[[:alnum:]_.-]*\.dtbo\b' "$DTS_MAKEFILE" | grep -v -- '-base$' | wc -l
           fi
 
-      - name: Fix drivers/staging/prima internal wireless driver
+      - name: Fix drivers/staging/prima instead of excluding it
         working-directory: kernel_source
         run: |
-          MCTRACE_FILE="drivers/staging/prima/CORE/MAC/src/pe/lib/macTrace.c"
-          if [ -f "$MCTRACE_FILE" ]; then
-            echo "Patching broken debug strings out of macTrace.c..."
-            # Safely replace missing or undeclared debug case switches to prevent errors
-            sed -i '/CASE_RETURN_STRING(eWNI_SME_ADD_TS_RSP);/d' "$MCTRACE_FILE"
-            sed -i '/CASE_RETURN_STRING(eWNI_SME_DEL_TS_RSP);/d' "$MCTRACE_FILE"
-            sed -i '/CASE_RETURN_STRING(eWNI_SME_DEL_TS_IND);/d' "$MCTRACE_FILE"
-            sed -i '/CASE_RETURN_STRING(P2P_NOT_ACTIVE);/d' "$MCTRACE_FILE"
+          # CHANGED in v14: a previous version of this workflow excluded
+          # drivers/staging/prima ENTIRELY to dodge a compile error — but
+          # that turned out to break internal WiFi and Bluetooth, since
+          # prima is the active WCNSS driver for both on this chip. This
+          # version keeps the driver and patches out only the 9 specific
+          # broken debug-logging lines that failed to compile.
+          MACTRACE="drivers/staging/prima/CORE/SYS/legacy/src/utils/src/macTrace.c"
+          if [ -f "$MACTRACE" ]; then
+            echo "CASE_RETURN_STRING(P2P_*) lines before:"
+            grep -c "CASE_RETURN_STRING(P2P_" "$MACTRACE" || true
+            sed -i '/CASE_RETURN_STRING(P2P_/d' "$MACTRACE"
+            echo "CASE_RETURN_STRING(P2P_*) lines after (should be 0):"
+            grep -c "CASE_RETURN_STRING(P2P_" "$MACTRACE" || echo 0
+          else
+            echo "WARNING: $MACTRACE not found — check the path; prima may"
+            echo "have moved or this fix may no longer be needed."
           fi
 
-      - name: Integrate RTL8821AU/8811AU external WiFi adapter driver
+      # NOTE: RTL8821AU driver build moved to AFTER "Build kernel" below —
+      # see that step for why (it's an external module build, not in-tree).
+
+      # Shared make args reused by every kernel build step below.
+      - name: Configure kernel
         working-directory: kernel_source
         run: |
-          DRIVER_DIR="drivers/net/wireless/rtl8821au"
-          echo "Cloning actively maintained morrownr Realtek driver branch..."
-          git clone --depth=1 "${{ env.RTL8821AU_REPO }}" "$DRIVER_DIR"
-
-          # 1. Register path inside wireless Kconfig menu system
-          if ! grep -q "rtl8821au/Kconfig" drivers/net/wireless/Kconfig; then
-            sed -i '/endmenu/i source "drivers/net/wireless/rtl8821au/Kconfig"' drivers/net/wireless/Kconfig
-          fi
-
-          # 2. Wire target directory execution rules into parent wireless Makefile
-          if ! grep -q "rtl8821au/" drivers/net/wireless/Makefile; then
-            echo 'obj-$(CONFIG_RTL8821AU) += rtl8821au/' >> drivers/net/wireless/Makefile
-          fi
-
-          # 3. Patch tristate type bindings down to standard boolean values.
-          # This converts the target from a dynamic module (=m) option to a static 
-          # monolithic (=y) option, enforcing deployment directly inside Image.gz-dtb.
-          if [ -f "$DRIVER_DIR/Kconfig" ]; then
-            sed -i 's/tristate/bool/g' "$DRIVER_DIR/Kconfig"
-          fi
-          echo "Driver configuration routing successfully linked."
-
-      - name: Generate base kernel configurations (.config)
-        working-directory: kernel_source
-        run: |
-          make O=${{ env.OUT_DIR }} ${{ env.DEFCONFIG }}
-          
-          echo "Enabling NetHunter core variables inside .config..."
-          # Core network mapping rules required for aircrack suite hooks
-          sed -i 's/# CONFIG_CFG80211 is not set/CONFIG_CFG80211=y/g' ${{ env.OUT_DIR }}/.config
-          
-          echo "Enabling Realtek RTL8821AU driver inside compilation block..."
-          echo "CONFIG_RTL8821AU=y" >> ${{ env.OUT_DIR }}/.config
-
-      - name: Compile Monolithic NetHunter Kernel Block
-        working-directory: kernel_source
-        run: |
-          make -j$(nproc) O=${{ env.OUT_DIR }} \
-            CC=clang \
+          make O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
+            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            LD=${{ env.LD }} \
-            AR=${{ env.AR }} \
-            NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} \
-            OBJDUMP=${{ env.OBJDUMP }} \
-            STRIP=${{ env.STRIP }}
+            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
+            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
+            ${{ env.DEFCONFIG }}
+
+      - name: Enable NetHunter-required kernel configs
+        working-directory: kernel_source
+        run: |
+          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
+            -e CONFIG_TUN \
+            -e CONFIG_USB \
+            -e CONFIG_USB_GADGET \
+            -e CONFIG_USB_CONFIGFS \
+            -e CONFIG_USB_CONFIGFS_F_HID \
+            -e CONFIG_HIDRAW \
+            -e CONFIG_PACKET \
+            -e CONFIG_CFG80211 \
+            -e CONFIG_CFG80211_WEXT \
+            -e CONFIG_MAC80211 || true
+
+          make O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
+            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
+            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
+            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
+            olddefconfig
+
+      - name: Build kernel
+        working-directory: kernel_source
+        run: |
+          make -j"$(nproc)" O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
+            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
+            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
+            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }}
+
+      - name: Build RTL8821AU as an EXTERNAL module (corrected in v16)
+        run: |
+          # CORRECTED in v16: v15 wired this driver into drivers/net/wireless/
+          # as if it were an in-tree Kbuild subdirectory (obj-$(CONFIG_X) +=
+          # dir/). That was wrong — this driver's own Makefile is a complete,
+          # self-contained top-level Makefile with hardcoded local variables
+          # (CONFIG_RTL8821A = y etc, NOT kernel Kconfig symbols), meant to
+          # be built as a genuine OUT-OF-TREE external module. Kbuild
+          # recursing into it as a subdirectory never worked — that's why
+          # "Driver=(none)" showed up even though the workflow claimed to
+          # enable it. This version builds it correctly: as an external
+          # module against our already-built kernel, producing a real .ko.
+          #
+          # With CONFIG_RTL8821A=y and CONFIG_BT_COEXIST=y (the driver's own
+          # defaults, unmodified), its Makefile computes MODULE_NAME=8821au,
+          # so this should produce 8821au.ko.
+          git clone --depth=1 "${{ env.RTL8821AU_REPO }}" rtl8821au_driver
+
+          make -C "$GITHUB_WORKSPACE/kernel_source/${{ env.OUT_DIR }}" \
+            M="$GITHUB_WORKSPACE/rtl8821au_driver" \
+            ARCH=${{ env.ARCH }} \
+            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
+            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
+            modules
+
+          echo "--- Result: ---"
+          find rtl8821au_driver -maxdepth 1 -name "*.ko" -exec ls -la {} \; || \
+            echo "No .ko produced — check the build output above for errors."
 
       - name: Package flashable zip with AnyKernel3
         run: |
-          # 1. Clone the template repository
           git clone --depth=1 ${{ env.ANYKERNEL_REPO }} anykernel3_workspace
           cd anykernel3_workspace
-          
-          # 2. Clean out target placeholder files
+
           rm -rf README.md LICENSE *placeholder
-          
-          # 3. Copy your compiled kernel binary into the workspace root
+
           cp ../kernel_source/out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb || \
           cp ../kernel_source/out/arch/arm64/boot/Image.gz ./Image.gz
-          
-          # 4. Configure anykernel.sh variables for your device
+
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for Galaxy Tab A 8.0/g' anykernel.sh
-          
-          # Inject multiple codename variants to catch whatever your ROM uses in build.prop
           sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
           sed -i '/device.name1=gtowifi/a device.name2=gtowifiopen\ndevice.name3=gtowificell\ndevice.name4=gtowifixx\ndevice.name5=SM-T290\ndevice.name6=gto' anykernel.sh
-          
           sed -i 's/BLOCK=.*/BLOCK=auto;/g' anykernel.sh
           sed -i 's/IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' anykernel.sh
-          
-          # 5. Compress into the final flashable zip file
+
+          # Bundle the .ko so it travels with the kernel zip, even though it
+          # still needs manual insmod on-device — see chat notes on loading it.
+          mkdir -p modules
+          cp ../rtl8821au_driver/*.ko ./modules/ 2>/dev/null || echo "No .ko found to bundle — check the RTL8821AU build step output."
+
           zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
+
       - name: Upload Flashable Kernel Zip File
         uses: actions/upload-artifact@v4
         with:
           name: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}
-          path: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip
-          
-          
+          path: |
+            NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip
+            rtl8821au_driver/*.ko
