@@ -179,40 +179,35 @@ jobs:
             OBJDUMP=${{ env.OBJDUMP }} \
             STRIP=${{ env.STRIP }}
 
-      - name: Assemble Flashable Zip Distribution Package (AnyKernel3)
+      - name: Package flashable zip with AnyKernel3
         run: |
-          git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" AnyKernel3
-          # Clean placeholder fields out of target deployment layers
-          rm -f AnyKernel3/README.md AnyKernel3/modules/system/lib/modules/placeholder.bin
+          # 1. Clone the template repository
+          git clone --depth=1 ${{ env.ANYKERNEL_REPO }} anykernel3_workspace
+          cd anykernel3_workspace
           
-          # 1. Disable the device model check safety override
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          # 2. Clean out target placeholder files
+          rm -rf README.md LICENSE *placeholder
           
-          # 2. Configure AnyKernel3 to look for the correct boot block path format.
-          # We use "auto" for the block string so AnyKernel3 automatically crawls 
-          # your device's /dev/block directory tree to find your specific boot partition.
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=auto;|g' AnyKernel3/anykernel.sh
+          # 3. Copy your compiled kernel binary into the workspace root
+          cp ../kernel_source/out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb || \
+          cp ../kernel_source/out/arch/arm64/boot/Image.gz ./Image.gz
           
-          # 3. Explicitly configure your Qualcomm device partition configurations
-          sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+          # 4. Configure anykernel.sh variables for your device
+          sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for Galaxy Tab A 8.0/g' anykernel.sh
           
-          # 4. SAMSUNG GTOWIFI SPECIFIC BUGFIX:
-          # Tells AnyKernel3 to append Samsung's required verification trailing metadata 
-          # (SEANDROIDENFORCE + SignerVer02 signatures) onto your newly generated image. 
-          # Without this, the Tab A bootloader will throw a "Secure Check Fail: boot.img" error.
-          sed -i 's/block;$/block;\n\n# Samsung Security Metadata Signature Injection\nappend_seandroidenforce=1/' AnyKernel3/anykernel.sh
+          # Inject multiple codename variants to catch whatever your ROM uses in build.prop
+          sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
+          sed -i '/device.name1=gtowifi/a device.name2=gtowifiopen\ndevice.name3=gtowificell\ndevice.name4=gtowifixx\ndevice.name5=SM-T290\ndevice.name6=gto' anykernel.sh
           
-          # Move target core binary output directly to root level folder
-          cp kernel_source/${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          sed -i 's/BLOCK=.*/BLOCK=auto;/g' anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0;/g' anykernel.sh
           
-          cd AnyKernel3
+          # 5. Compress into the final flashable zip file
           zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
-          
-          
-          
-      - name: Archive Production Release Artifacts
+      - name: Upload Flashable Kernel Zip File
         uses: actions/upload-artifact@v4
         with:
           name: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}
           path: NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip
+          
           
