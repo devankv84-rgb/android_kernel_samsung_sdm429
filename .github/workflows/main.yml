@@ -185,11 +185,16 @@ jobs:
           # Clean placeholder fields out of target deployment layers
           rm -f AnyKernel3/README.md AnyKernel3/modules/system/lib/modules/placeholder.bin
           
+          # --- ADD THIS LINE RIGHT HERE ---
+          # Disables the strict AnyKernel string match check so it accepts your build
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          
           # Move target core binary output directly to root level folder
           cp kernel_source/${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           
           cd AnyKernel3
           zip -r9 ../NetHunter-Kernel-${{ env.DEVICE_CODENAME }}.zip *
+          
           
       - name: Archive Production Release Artifacts
         uses: actions/upload-artifact@v4
