@@ -55,15 +55,23 @@ name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
 #   modules), producing a real 8821au.ko matched to this exact kernel build.
 #   This .ko is bundled into the output but still needs manual `insmod` on
 #   the device — Android doesn't auto-load out-of-tree modules by default.
-# v17 (this version): v16's own build succeeded with no errors, but logged
-#   "MODPOST 0 modules" — an empty object list, not a failure. Confirmed via
-#   how the Gentoo and Nix packages for this exact driver invoke it: its
-#   Makefile has its own internal wrapper expecting to be the ENTRY POINT
-#   (make -C <driver> KSRC=<kernel> modules, run from the driver's own
-#   directory), not something Kbuild should drive from outside via M=. v16's
-#   direct `-C <kernel> M=<driver>` bypassed the part of the Makefile that
-#   actually sets obj-m. FIX: invoke the driver's own Makefile as -C, with
-#   KSRC pointing at the built kernel, matching its actual design.
+# v17: v16's build succeeded with no errors but logged "MODPOST 0 modules"
+#   (empty object list). Confirmed via how the Gentoo/Nix packages for this
+#   driver invoke it: its Makefile expects to be the ENTRY POINT itself
+#   (make -C <driver> KSRC=<kernel> modules), not driven from outside via
+#   M=. FIX: invoke the driver's own Makefile as -C, with KSRC pointing at
+#   the built kernel.
+# v18 (this version): v17 actually started compiling real source files
+#   (CC [M] rtw_cmd.o etc) — the KSRC-based invocation worked — but then
+#   failed on "unknown warning option '-Wno-enum-int-mismatch'" and similar.
+#   The driver's Makefile has warning-suppression flags written for GCC 13
+#   that Clang has never heard of; normally Clang just warns and continues,
+#   but our kernel build's own -Werror=unknown-warning-option setting (baked
+#   into KSRC's saved config) gets inherited into this external module
+#   build too, turning it into a hard error. FIX: pass
+#   KCFLAGS="-Wno-unknown-warning-option" to this build specifically, so
+#   Clang stops treating any further GCC-only flags in this file as fatal,
+#   rather than deleting each one individually as they turn up.
 # ---------------------------------------------------------------------------
 
 on:
@@ -253,20 +261,14 @@ jobs:
             LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
             OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }}
 
-      - name: Build RTL8821AU as an EXTERNAL module (corrected in v17)
+      - name: Build RTL8821AU as an EXTERNAL module (corrected in v18)
         run: |
-          # CORRECTED in v17: v16 invoked Kbuild directly from outside
-          # (make -C <kernel> M=<driver> modules), which produced
-          # "MODPOST 0 modules" — no error, but an empty object list. This
-          # driver's own Makefile has internal wrapper logic that expects to
-          # be the ENTRY POINT itself (confirmed by how the Gentoo and Nix
-          # packages for this exact driver invoke it: `make KSRC=<kernel>
-          # modules`, run from INSIDE the driver's own directory). Driving
-          # Kbuild ourselves from outside bypassed the part of its Makefile
-          # that actually sets obj-m, so nothing got built despite no error.
-          # FIX: invoke the driver's own Makefile directly as -C, passing
-          # KSRC to point at our built kernel, and let IT wrap the call to
-          # Kbuild internally, matching how it's actually designed to work.
+          # v17 got the KSRC-based invocation right (real files compiled),
+          # but Clang choked on GCC-13-only warning flags this driver's
+          # Makefile sets (-Wno-enum-int-mismatch etc), escalated to a hard
+          # error by -Werror=unknown-warning-option inherited from our
+          # kernel's own build config. KCFLAGS below tells Clang to stop
+          # treating unrecognized -W flags as fatal for this build.
           git clone --depth=1 "${{ env.RTL8821AU_REPO }}" rtl8821au_driver
 
           make -C "$GITHUB_WORKSPACE/rtl8821au_driver" \
@@ -276,6 +278,7 @@ jobs:
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
             OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
+            KCFLAGS="-Wno-unknown-warning-option" \
             modules
 
           echo "--- Result: ---"
