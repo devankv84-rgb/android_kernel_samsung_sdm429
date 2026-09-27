@@ -193,7 +193,7 @@ jobs:
             echo "have moved or this fix may no longer be needed."
           fi
 
-            - name: Add RTL8821AU/8811AU external WiFi adapter driver
+       - name: Add RTL8821AU/8811AU external WiFi adapter driver
         working-directory: kernel_source
         run: |
           DRIVER_DIR="drivers/net/wireless/rtl8821au"
