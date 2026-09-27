@@ -193,50 +193,24 @@ jobs:
             echo "have moved or this fix may no longer be needed."
           fi
 
-      - name: Add RTL8821AU/8811AU external WiFi adapter driver
+            - name: Add RTL8821AU/8811AU external WiFi adapter driver
         working-directory: kernel_source
         run: |
-          # Uses morrownr/8821au-20210708 — the actively maintained driver
-          # for RTL8811AU/RTL8821AU chipsets, with confirmed monitor mode +
-          # packet injection support.
           DRIVER_DIR="drivers/net/wireless/rtl8821au"
           git clone --depth=1 "${{ env.RTL8821AU_REPO }}" "$DRIVER_DIR"
 
-          echo "--- Diagnostic: CONFIG_ symbols defined in this driver's own Makefile ---"
-          grep -o 'CONFIG_[A-Z0-9_]*' "$DRIVER_DIR/Makefile" | sort -u || echo "(none found — Makefile may use a different pattern)"
-          echo "--- end diagnostic ---"
-
-          # Wire into the parent Kconfig, if not already present
+          # 1. Wire into the parent Kconfig
           if ! grep -q "rtl8821au/Kconfig" drivers/net/wireless/Kconfig; then
             echo 'source "drivers/net/wireless/rtl8821au/Kconfig"' >> drivers/net/wireless/Kconfig
           fi
-          # This driver is built for standalone/external module builds and
-          # likely doesn't ship a proper kernel Kconfig file — create a
-          # minimal one if missing. CONFIG_88XXAU is our best-guess symbol
-          # name based on this Realtek driver family's common convention;
-          # check the diagnostic grep above and adjust if it's wrong.
-          if [ ! -f "$DRIVER_DIR/Kconfig" ]; then
-            cat > "$DRIVER_DIR/Kconfig" << 'EOF'
-          config 88XXAU
-          	tristate "Realtek RTL8811AU/8821AU USB WiFi driver"
-          	depends on USB && CFG80211
-          	default n
-          	help
-          	  Realtek RTL8811AU/8821AU chipset support with monitor mode
-          	  and packet injection (morrownr driver), for NetHunter.
-          EOF
-          fi
 
-          # Wire into the parent Makefile, if not already present.
-          # NOTE: this driver's own Makefile likely already defines its own
-          # obj-$(CONFIG_88XXAU) rule internally (standard for this Realtek
-          # driver family) — only add a subdirectory reference here, don't
-          # duplicate the obj- rule itself.
+          # 2. Wire into the parent Makefile using the proper native configuration flag
           if ! grep -q "rtl8821au/" drivers/net/wireless/Makefile; then
-            echo 'obj-$(CONFIG_88XXAU) += rtl8821au/' >> drivers/net/wireless/Makefile
+            echo 'obj-$(CONFIG_RTL8821AU) += rtl8821au/' >> drivers/net/wireless/Makefile
           fi
 
-          echo "RTL8821AU driver wired in at $DRIVER_DIR"
+          echo "RTL8821AU driver successfully linked with native CONFIG_RTL8821AU tags."
+
 
       # Shared make args reused by every kernel build step below.
       - name: Configure kernel
