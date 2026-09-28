@@ -1,412 +1,72 @@
-name: Build NetHunter Kernel (Samsung gtowifi - LineageOS 22.2)
-
-# ---------------------------------------------------------------------------
-# HOW TO USE THIS FILE
-# 1. Place this at: <your-repo>/.github/workflows/build-nethunter-kernel.yml
-# 2. Trigger manually from the Actions tab, or push a tag like "kernel-v1".
-#
-# CONFIRMED DEVICE INFO (Samsung Galaxy Tab A 8.0 (2019), codename gtowifi):
-# - SoC: Qualcomm Snapdragon 429 (SDM429), arm64, quad-core Cortex-A53
-# - Kernel source: LineageOS/android_kernel_samsung_sdm429
-# - Defconfig: lineageos_gtowifi_defconfig (confirmed)
-# - Toolchain: Proton Clang (Clang + matching GNU binutils)
-#
-# FIX HISTORY (abbreviated — see prior versions for the full toolchain saga):
-# v2–v9: toolchain fixes (CROSS_COMPILE_ARM32, vdso32 ld.bfd, GCC-too-old,
-#   dtc "-@" flag) — all resolved via Proton Clang + targeted flag strips.
-# v11–v12: disabled device-tree overlay (dtbo) building — unrelated Qualcomm
-#   MTP reference boards' overlays failed to parse on this kernel's old dtc.
-# v13: added stock boot.img repacking for Odin flashing, since this device
-#   has no working TWRP and stock recovery rejects unsigned zips. (You may
-#   have since found a working flash method of your own — this version
-#   doesn't re-litigate that part, only the two issues below.)
-# v14 (this version) fixes two issues found AFTER a successful flash:
-#
-#   1. INTERNAL WIFI/BLUETOOTH BROKEN: caused by a PREVIOUS fix in this
-#      history that excluded drivers/staging/prima entirely to get past a
-#      compile error ("undeclared identifier P2P_NOT_ACTIVE" etc in
-#      macTrace.c). That exclusion was flagged as a gamble at the time —
-#      it turned out prima IS the active WCNSS driver for both WiFi and
-#      Bluetooth on this chip (they share the same firmware stack), so
-#      disabling it broke both. FIX: stop excluding prima. Instead, patch
-#      out ONLY the 9 specific broken lines in macTrace.c — they're pure
-#      debug-logging code (CASE_RETURN_STRING just converts an enum to a
-#      string for log output), so removing them has zero effect on actual
-#      WiFi/BT function, unlike excluding the whole driver.
-#
-#   2. EXTERNAL USB ADAPTERS NOT DETECTED: this workflow never actually had
-#      driver integration for external WiFi adapters — it was discussed
-#      conversationally earlier but never added to the real file.
-# v15: swapped to morrownr/8821au-20210708 (RTL8811AU/RTL8821AU chipsets,
-#   confirmed monitor mode + injection) after identifying the actual
-#   adapter's chipset via lsusb (TP-Link Archer T2U Plus, 2357:0120).
-#   Wired it into drivers/net/wireless/ as an in-tree Kconfig subdirectory.
-# v16 (this version): v15's wiring was WRONG, not just a wrong symbol name.
-#   Fetched this driver's actual Makefile and found it's a complete,
-#   self-contained top-level Makefile with hardcoded local variables
-#   (CONFIG_RTL8821A = y etc — plain Makefile variables, NOT kernel Kconfig
-#   symbols), designed to be built as a genuine OUT-OF-TREE external module,
-#   the same way you'd build any standalone driver against an
-#   already-installed kernel. Treating it as an in-tree Kbuild subdirectory
-#   never actually compiled it — that's the real reason lsusb showed
-#   "Driver=(none)" even though the workflow claimed to enable it.
-#   FIX: build it separately, AFTER the kernel finishes, using the standard
-#   external-module Kbuild pattern (make -C <built-kernel> M=<driver-dir>
-#   modules), producing a real 8821au.ko matched to this exact kernel build.
-#   This .ko is bundled into the output but still needs manual `insmod` on
-#   the device — Android doesn't auto-load out-of-tree modules by default.
-# v17: v16's build succeeded with no errors but logged "MODPOST 0 modules"
-#   (empty object list). Confirmed via how the Gentoo/Nix packages for this
-#   driver invoke it: its Makefile expects to be the ENTRY POINT itself
-#   (make -C <driver> KSRC=<kernel> modules), not driven from outside via
-#   M=. FIX: invoke the driver's own Makefile as -C, with KSRC pointing at
-#   the built kernel.
-# v18 (this version): v17 actually started compiling real source files
-#   (CC [M] rtw_cmd.o etc) — the KSRC-based invocation worked — but then
-#   failed on "unknown warning option '-Wno-enum-int-mismatch'" and similar.
-#   The driver's Makefile has warning-suppression flags written for GCC 13
-#   that Clang has never heard of; normally Clang just warns and continues,
-#   but our kernel build's own -Werror=unknown-warning-option setting (baked
-#   into KSRC's saved config) gets inherited into this external module
-#   build too, turning it into a hard error. FIX: pass
-#   KCFLAGS="-Wno-unknown-warning-option" to this build specifically, so
-#   Clang stops treating any further GCC-only flags in this file as fatal,
-#   rather than deleting each one individually as they turn up.
-# v19 (this version): KCFLAGS got past the flag issue, but hit a genuine
-#   kernel-API version mismatch: this kernel's cfg80211.h declares the
-#   MODERN 3-argument cfg80211_roamed(dev, struct cfg80211_roam_info*, gfp),
-#   but the driver's ioctl_cfg80211.c still calls the OLD 8-positional-
-#   argument form. This exact break is well-documented across sibling
-#   Realtek drivers (rtl8723bs, rtl8812au) with an identical established
-#   fix. Added a new step, run right after cloning the driver and before
-#   building it, that patches this call using bracket-matching (not a
-#   fragile exact-text sed) to wrap the old arguments into a local struct
-#   and call the modern 3-arg form. Flagged as the most surgical, least-
-#   verified fix in this whole history — check its log output (it prints
-#   what it found and changed) if the build still fails at this spot.
-# ---------------------------------------------------------------------------
+name: Build RTL88XXAU Wi-Fi Driver Module (.ko)
 
 on:
   workflow_dispatch:
-    inputs:
-      kernel_branch:
-        description: "Kernel source branch/tag to build"
-        required: false
-        default: "lineage-22.2"
   push:
-    tags:
-      - "kernel-v*"
-
-env:
-  DEVICE_CODENAME: gtowifi
-  DEFCONFIG: lineageos_gtowifi_defconfig
-  KERNEL_REPO: https://github.com/LineageOS/android_kernel_samsung_sdm429.git
-  KERNEL_BRANCH: lineage-22.2
-  NETHUNTER_KERNEL_BUILDER: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-project.git
-  RTL8821AU_REPO: https://github.com/morrownr/8821au-20210708.git
-  ARCH: arm64
-  OUT_DIR: out
-  ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
+    branches: [ "*" ]
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+  build-module:
+    runs-on: ubuntu-20.04
 
     steps:
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo apt-get clean
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v3
 
-      - name: Install build dependencies
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git build-essential bc bison flex libssl-dev libncurses-dev \
-            python3 python3-pip lz4 zip unzip wget curl \
-            cpio rsync
-          # NOTE: no device-tree-compiler / gcc-aarch64-linux-gnu / gcc-arm-
-          # linux-gnueabi here — see FIX HISTORY, these caused problems and
-          # were replaced by Proton Clang + the kernel's own bundled dtc.
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses5-dev \
+            git \
+            zip \
+            unzip
 
-      - name: Pull Proton Clang toolchain
+      - name: Setup GCC 4.9 Toolchain
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
-          echo "TOOLCHAIN_BIN=$GITHUB_WORKSPACE/proton-clang/bin" >> "$GITHUB_ENV"
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain
+          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
 
-      - name: Ensure no system dtc shadows the kernel's own build
+      - name: Prepare Kernel Source Headers
         run: |
-          SYS_DTC=$(command -v dtc || true)
-          if [ -n "$SYS_DTC" ]; then
-            echo "Found pre-existing system dtc at $SYS_DTC — moving it aside."
-            sudo mv "$SYS_DTC" "${SYS_DTC}.disabled-by-workflow"
-          else
-            echo "No pre-existing system dtc found — nothing to do."
-          fi
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
+          
+          # 1. Clean build directory
+          make clean && make mrproper
+          
+          # 2. Generate .config using your target defconfig
+          make lineageos_gtowifi_defconfig
+          
+          # 3. Prepare kernel headers for out-of-tree module compilation
+          make prepare
+          make modules_prepare
 
-      - name: Checkout kernel source
+      - name: Clone RTL88XXAU Driver Repository
         run: |
-          git clone --depth=1 -b "${{ github.event.inputs.kernel_branch || env.KERNEL_BRANCH }}" \
-            "${{ env.KERNEL_REPO }}" kernel_source
+          git clone -b v5.6.4.2 https://github.com/aircrack-ng/rtl8812au.git rtl88XXau
 
-      - name: List available defconfigs (sanity check)
-        working-directory: kernel_source
+      - name: Compile rtl88XXau Module
         run: |
-          echo "Available defconfigs for this branch:"
-          ls arch/arm64/configs/ | grep -i -E "gto|sdm429|perf" || ls arch/arm64/configs/
+          cd rtl88XXau
+          make ARCH=arm64 \
+               CROSS_COMPILE=aarch64-linux-android- \
+               KSRC=${{ github.workspace }} \
+               modules
 
-      - name: Clone NetHunter kernel build helper scripts
+      - name: Prepare Artifact Output
         run: |
-          git clone --depth=1 "${{ env.NETHUNTER_KERNEL_BUILDER }}" nethunter-builder
+          mkdir -p output
+          # Copy whatever module output file was generated (.ko)
+          find rtl88XXau -type f -name "*.ko" -exec cp {} output/ \;
 
-      - name: Apply NetHunter kernel patches
-        working-directory: kernel_source
-        run: |
-          PATCH_DIR="../nethunter-builder/patches/<<<kernel-version-folder>>>"
-          if [ -d "$PATCH_DIR" ]; then
-            for p in "$PATCH_DIR"/*.patch; do
-              echo "Applying $p"
-              git apply --reject --whitespace=fix "$p" || true
-            done
-          else
-            echo "WARNING: no matching NetHunter patch directory found for this kernel version."
-          fi
-
-      - name: Set up toolchain
-        run: |
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE=${{ env.TOOLCHAIN_BIN }}/aarch64-linux-gnu-" >> "$GITHUB_ENV"
-          echo "CROSS_COMPILE_ARM32=${{ env.TOOLCHAIN_BIN }}/arm-linux-gnueabi-" >> "$GITHUB_ENV"
-          echo "LD=ld.lld" >> "$GITHUB_ENV"
-          echo "AR=llvm-ar" >> "$GITHUB_ENV"
-          echo "NM=llvm-nm" >> "$GITHUB_ENV"
-          echo "OBJCOPY=llvm-objcopy" >> "$GITHUB_ENV"
-          echo "OBJDUMP=llvm-objdump" >> "$GITHUB_ENV"
-          echo "STRIP=llvm-strip" >> "$GITHUB_ENV"
-          echo "ARCH=arm64" >> "$GITHUB_ENV"
-          echo "${{ env.TOOLCHAIN_BIN }}" >> "$GITHUB_PATH"
-
-      - name: Strip unsupported dtc "-@" flag wherever DTC_FLAGS is set
-        working-directory: kernel_source
-        run: |
-          find scripts/ arch/arm64 -type f -name "Makefile*" -print0 2>/dev/null | \
-            xargs -0 -r sed -i '/DTC_FLAGS/ s/-@//g'
-
-      - name: Disable device-tree overlay (dtbo) building entirely
-        working-directory: kernel_source
-        run: |
-          DTS_MAKEFILE="arch/arm64/boot/dts/qcom/Makefile"
-          if [ -f "$DTS_MAKEFILE" ]; then
-            perl -i -pe 's/\S*\.dtbo(?!-base)\b\s*\\?\s*//g' "$DTS_MAKEFILE"
-            echo "Bare .dtbo tokens remaining (should be 0):"
-            grep -o '[[:alnum:]_.-]*\.dtbo\b' "$DTS_MAKEFILE" | grep -v -- '-base$' | wc -l
-          fi
-
-      - name: Fix drivers/staging/prima instead of excluding it
-        working-directory: kernel_source
-        run: |
-          # CHANGED in v14: a previous version of this workflow excluded
-          # drivers/staging/prima ENTIRELY to dodge a compile error — but
-          # that turned out to break internal WiFi and Bluetooth, since
-          # prima is the active WCNSS driver for both on this chip. This
-          # version keeps the driver and patches out only the 9 specific
-          # broken debug-logging lines that failed to compile.
-          MACTRACE="drivers/staging/prima/CORE/SYS/legacy/src/utils/src/macTrace.c"
-          if [ -f "$MACTRACE" ]; then
-            echo "CASE_RETURN_STRING(P2P_*) lines before:"
-            grep -c "CASE_RETURN_STRING(P2P_" "$MACTRACE" || true
-            sed -i '/CASE_RETURN_STRING(P2P_/d' "$MACTRACE"
-            echo "CASE_RETURN_STRING(P2P_*) lines after (should be 0):"
-            grep -c "CASE_RETURN_STRING(P2P_" "$MACTRACE" || echo 0
-          else
-            echo "WARNING: $MACTRACE not found — check the path; prima may"
-            echo "have moved or this fix may no longer be needed."
-          fi
-
-      # NOTE: RTL8821AU driver build moved to AFTER "Build kernel" below —
-      # see that step for why (it's an external module build, not in-tree).
-
-      # Shared make args reused by every kernel build step below.
-      - name: Configure kernel
-        working-directory: kernel_source
-        run: |
-          make O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
-            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
-            ${{ env.DEFCONFIG }}
-
-      - name: Enable NetHunter-required kernel configs
-        working-directory: kernel_source
-        run: |
-          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
-            -e CONFIG_TUN \
-            -e CONFIG_USB \
-            -e CONFIG_USB_GADGET \
-            -e CONFIG_USB_CONFIGFS \
-            -e CONFIG_USB_CONFIGFS_F_HID \
-            -e CONFIG_HIDRAW \
-            -e CONFIG_PACKET \
-            -e CONFIG_CFG80211 \
-            -e CONFIG_CFG80211_WEXT \
-            -e CONFIG_MAC80211 || true
-
-          make O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
-            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
-            olddefconfig
-
-      - name: Build kernel
-        working-directory: kernel_source
-        run: |
-          make -j"$(nproc)" O=${{ env.OUT_DIR }} ARCH=${{ env.ARCH }} \
-            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }}
-
-      - name: Build RTL8821AU as an EXTERNAL module (corrected in v18)
-        run: |
-          # v17 got the KSRC-based invocation right (real files compiled),
-          # but Clang choked on GCC-13-only warning flags this driver's
-          # Makefile sets (-Wno-enum-int-mismatch etc), escalated to a hard
-          # error by -Werror=unknown-warning-option inherited from our
-          # kernel's own build config. KCFLAGS below tells Clang to stop
-          # treating unrecognized -W flags as fatal for this build.
-          git clone --depth=1 "${{ env.RTL8821AU_REPO }}" rtl8821au_driver
-
-      - name: Patch cfg80211_roamed() for this kernel's newer cfg80211 API
-        run: |
-          # This kernel's cfg80211.h declares the MODERN 3-argument
-          # cfg80211_roamed(dev, struct cfg80211_roam_info *info, gfp) —
-          # but this driver's ioctl_cfg80211.c still calls it with the OLD
-          # 8-positional-argument form (dev, channel, bssid, req_ie,
-          # req_ie_len, resp_ie, resp_ie_len, gfp). This exact break is
-          # well-documented across sibling Realtek drivers (rtl8723bs,
-          # rtl8812au) with an identical, established fix: wrap the old
-          # arguments into a local struct cfg80211_roam_info and call the
-          # 3-argument form instead.
-          #
-          # This patch finds the call by bracket-matching (robust to minor
-          # formatting differences between driver forks) rather than a
-          # fragile exact-text sed, since the precise surrounding text in
-          # THIS specific fork wasn't directly verified before writing this.
-          python3 - << 'PYEOF'
-          import re, sys
-
-          path = "rtl8821au_driver/os_dep/linux/ioctl_cfg80211.c"
-          with open(path) as f:
-              src = f.read()
-
-          start = src.find("cfg80211_roamed(")
-          if start == -1:
-              print("WARNING: 'cfg80211_roamed(' not found — driver source may")
-              print("have changed. Skipping patch; the build will show the")
-              print("real error again if this is still needed.")
-              sys.exit(0)
-
-          # Find the matching closing paren for this call by depth-counting,
-          # then the terminating semicolon right after it.
-          i = start + len("cfg80211_roamed(")
-          depth = 1
-          while depth > 0:
-              if src[i] == '(':
-                  depth += 1
-              elif src[i] == ')':
-                  depth -= 1
-              i += 1
-          end_paren = i  # index just past the matching ')'
-          end_semi = src.find(';', end_paren) + 1
-
-          old_call = src[start:end_semi]
-          args_raw = src[start + len("cfg80211_roamed("):end_paren - 1]
-
-          # Split top-level args on commas (ignoring commas inside nested parens)
-          args = []
-          depth = 0
-          cur = ""
-          for ch in args_raw:
-              if ch == '(':
-                  depth += 1
-              elif ch == ')':
-                  depth -= 1
-              if ch == ',' and depth == 0:
-                  args.append(cur.strip())
-                  cur = ""
-              else:
-                  cur += ch
-          if cur.strip():
-              args.append(cur.strip())
-          args = [a for a in args if a and not a.startswith('#')]
-
-          print(f"Found cfg80211_roamed() call with {len(args)} arguments:")
-          for a in args:
-              print("  -", a.replace("\n", " ").strip())
-
-          if len(args) < 7:
-              print("WARNING: fewer arguments than expected for the known old-API")
-              print("pattern — skipping automatic rewrite to avoid corrupting the")
-              print("file. Manual inspection needed.")
-              sys.exit(0)
-
-          # Canonical old-API argument order for this Realtek driver lineage:
-          # dev, channel, bssid, req_ie, req_ie_len, resp_ie, resp_ie_len, gfp
-          dev, channel, bssid, req_ie, req_ie_len, resp_ie, resp_ie_len, gfp = (
-              args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-              args[7] if len(args) > 7 else "GFP_ATOMIC"
-          )
-
-          new_call = f"""{{
-          \tstruct cfg80211_roam_info roam_info;
-          \tmemset(&roam_info, 0, sizeof(roam_info));
-          \troam_info.channel = {channel};
-          \troam_info.bssid = {bssid};
-          \troam_info.req_ie = {req_ie};
-          \troam_info.req_ie_len = {req_ie_len};
-          \troam_info.resp_ie = {resp_ie};
-          \troam_info.resp_ie_len = {resp_ie_len};
-          \tcfg80211_roamed({dev}, &roam_info, {gfp});
-          }}"""
-
-          src = src[:start] + new_call + src[end_semi:]
-          with open(path, "w") as f:
-              f.write(src)
-
-          print("Patched cfg80211_roamed() call to use the modern struct-based API.")
-          PYEOF
-
-          make -C "$GITHUB_WORKSPACE/rtl8821au_driver" \
-            KSRC="$GITHUB_WORKSPACE/kernel_source/${{ env.OUT_DIR }}" \
-            ARCH=${{ env.ARCH }} \
-            CC=${{ env.CC }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            LD=${{ env.LD }} AR=${{ env.AR }} NM=${{ env.NM }} \
-            OBJCOPY=${{ env.OBJCOPY }} OBJDUMP=${{ env.OBJDUMP }} STRIP=${{ env.STRIP }} \
-            KCFLAGS="-Wno-unknown-warning-option" \
-            modules
-
-          echo "--- Result: ---"
-          find rtl8821au_driver -maxdepth 1 -name "*.ko" -exec ls -la {} \; || \
-            echo "No .ko produced — check the build output above for errors."
-
-      - name: Package flashable zip with AnyKernel3
-        run: |
-          git clone --depth=1 ${{ env.ANYKERNEL_REPO }} anykernel3_workspace
-          cd anykernel3_workspace
-
-          rm -rf README.md LICENSE *placeholder
-
-          cp ../kernel_source/out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb || \
-          cp ../kernel_source/out/arch/arm64/boot/Image.gz ./Image.gz
-
-          sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for Galaxy Tab A 8.0/g' anykernel.sh
-          sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
-          sed -i '/device.name1=gtowifi/a device.name2=gtowifiopen\ndevice.name3=gtowificell\ndevice.name4=gtowifixx\ndevice.name
+      - name: Upload .ko Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: rtl88XXau-driver-module
+          path: output/*.ko
