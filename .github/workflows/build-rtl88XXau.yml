@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout Kernel Source
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Build Dependencies
         run: |
@@ -65,7 +65,7 @@ jobs:
           find rtl88XXau -type f -name "*.ko" -exec cp {} output/ \;
 
       - name: Upload .ko Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rtl88XXau-driver-module
           path: output/*.ko
