@@ -56,7 +56,7 @@ jobs:
           make prepare
           make modules_prepare
 
-            - name: Clone RTL8812AU Driver Repository (v5.13.6 Branch)
+      - name: Clone RTL8812AU Driver Repository (v5.13.6 Branch)
         run: |
           git clone -b v5.13.6 https://github.com/aircrack-ng/rtl8812au.git rtl88XXau
           
