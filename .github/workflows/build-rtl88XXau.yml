@@ -1,4 +1,4 @@
-name: Build RTL88XXAU Wi-Fi Driver Module (.ko)
+name: Build Kernel Installer Zip and RTL88XXAU Module
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [ "*" ]
 
 jobs:
-  build-module:
+  build-kernel-and-module:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,9 +27,11 @@ jobs:
             python3 \
             zip \
             unzip \
-            openssl
+            liblz4-tool \
+            lzop \
+            cpio
 
-      - name: Setup GCC 4.9 Toolchain
+      - name: Setup Toolchains (GCC 4.9)
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain64
           echo "$(pwd)/toolchain64/bin" >> $GITHUB_PATH
@@ -38,53 +40,50 @@ jobs:
         run: |
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
-      - name: Prepare Kernel Source Headers & Generate Signing Keys
+      - name: Configure Kernel Options
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=aarch64-linux-android-
           
-          # Clean build directory
+          # Clean build tree
           make clean && make mrproper
           
-          # Generate .config using target defconfig
+          # Load defconfig
           make lineageos_gtowifi_defconfig
           
-          # Disable vDSO 32-bit targets
+          # Disable Module Signature Enforcement so insmod never blocks unsigned/custom modules
+          scripts/config --disable CONFIG_MODULE_SIG_FORCE
+          scripts/config --disable CONFIG_MODULE_SIG_ALL
+          scripts/config --enable CONFIG_MODULE_SIG
+          
+          # Disable problematic vDSO flags
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
+
+      - name: Build Kernel Image
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
           
-          # Prepare headers
+          # Compile Image and prepare headers
+          make -j$(nproc) Image.gz-dtb || make -j$(nproc) Image.gz || make -j$(nproc) Image
           make prepare
           make modules_prepare
-          
-          # Create certs directory and generate key pair if missing
-          mkdir -p certs
-          if [ ! -f "certs/signing_key.pem" ] && [ ! -f "signing_key.pem" ]; then
-            echo "Generating module signing key pair..."
-            openssl req -new -nodes -utf8 -sha256 -days 3650 -batch -x509 \
-              -subj "/CN=Build Module Signing Key/" \
-              -outform PEM -out certs/signing_key.pem \
-              -keyout certs/signing_key.pem
-
-            # Extract public certificate for sign-file tool
-            openssl x509 -in certs/signing_key.pem -outform DER -out certs/signing_key.x509
-          fi
 
       - name: Clone RTL8812AU Driver Repository
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
-      - name: Patch Driver Source Code for Kernel 4.9 & GCC 4.9
+      - name: Patch Driver Source Code for Kernel 4.9
         run: |
           cd rtl88XXau
           
-          # 1. Strip -Werror and unrecognized warning flags from Makefiles
+          # Strip unrecognized warning flags and -Werror
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
 
-          # 2. Python patch to update cfg80211_roamed parameter call inside ioctl_cfg80211.c
+          # Patch cfg80211_roamed parameter compatibility
           python3 -c '
           path = "os_dep/linux/ioctl_cfg80211.c"
           with open(path, "r") as f:
@@ -95,10 +94,9 @@ jobs:
           
           with open(path, "w") as f:
               f.write(code)
-          print("Successfully patched cfg80211_roamed version guards in ioctl_cfg80211.c")
           '
 
-      - name: Compile rtl88XXau Module
+      - name: Compile RTL88XXAU Module
         run: |
           cd rtl88XXau
           make ARCH=arm64 \
@@ -108,46 +106,40 @@ jobs:
                EXTRA_CFLAGS="-I${{ github.workspace }}/rtl88XXau/include -Wno-error -Wno-unused-variable -Wno-unused-value" \
                modules
 
-      - name: Locate and Sign Kernel Module
+      - name: Package Kernel into Flashable AnyKernel3 Zip
         run: |
-          # 1. Find the compiled .ko file dynamically
-          MODULE_PATH=$(find rtl88XXau -type f -name "*.ko" | head -n 1)
+          # 1. Clone AnyKernel3 template
+          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           
-          if [ -z "$MODULE_PATH" ]; then
-            echo "Error: Compilation finished, but no .ko file was found!"
-            exit 1
-          fi
-
-          echo "Found compiled module at: $MODULE_PATH"
-
-          # 2. Locate signing keys
-          KEY_PATH=""
-          CERT_PATH=""
-
-          if [ -f "certs/signing_key.pem" ] && [ -f "certs/signing_key.x509" ]; then
-            KEY_PATH="certs/signing_key.pem"
-            CERT_PATH="certs/signing_key.x509"
-          elif [ -f "signing_key.pem" ] && [ -f "signing_key.x509" ]; then
-            KEY_PATH="signing_key.pem"
-            CERT_PATH="signing_key.x509"
-          fi
-
-          if [ -n "$KEY_PATH" ]; then
-            echo "Signing $MODULE_PATH using $KEY_PATH..."
-            scripts/sign-file sha256 "$KEY_PATH" "$CERT_PATH" "$MODULE_PATH"
+          # 2. Configure target partition inside anykernel.sh
+          sed -i 's/BLOCK=auto;/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=auto;/g' AnyKernel3/anykernel.sh
+          
+          # 3. Locate and copy the built kernel image into AnyKernel3 directory
+          KERNEL_BIN=$(find arch/arm64/boot/ -type f \( -name "Image.gz-dtb" -o -name "Image.gz" -o -name "Image" \) | head -n 1)
+          
+          if [ -n "$KERNEL_BIN" ]; then
+            echo "Copying $KERNEL_BIN to AnyKernel3 directory..."
+            cp "$KERNEL_BIN" AnyKernel3/Image.gz-dtb || cp "$KERNEL_BIN" AnyKernel3/Image.gz || cp "$KERNEL_BIN" AnyKernel3/Image
           else
-            echo "Error: Could not locate signing key or certificate files."
+            echo "Error: Kernel binary not found!"
             exit 1
           fi
+          
+          # 4. Zip the AnyKernel3 release package
+          cd AnyKernel3
+          zip -r9 ../kernel-lineageos-gtowifi-flashable.zip * -x .git README.md *placeholder
+          cd ..
 
-      - name: Prepare Artifact Output
+      - name: Prepare Output Directory
         run: |
           mkdir -p output
-          find rtl88XXau -type f -name "*.ko" -exec cp {} output/ \;
+          mv kernel-lineageos-gtowifi-flashable.zip output/
+          find rtl88XXau/ -type f -name "*.ko" -exec cp {} output/ \;
 
-      - name: Upload Signed .ko Artifact
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rtl88XXau-driver-module-signed
-          path: output/*.ko
+          name: lineageos-kernel-installer-and-module
+          path: output/*
           
