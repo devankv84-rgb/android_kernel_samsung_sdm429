@@ -34,7 +34,6 @@ jobs:
 
       - name: Patch Compiler Check in Kernel Source
         run: |
-          # Disable strict GCC version check for older Android kernels
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
       - name: Prepare Kernel Source Headers & Module.symvers
@@ -46,14 +45,14 @@ jobs:
           # Clean build directory
           make clean && make mrproper
           
-          # 1. Generate .config using your target defconfig
+          # 1. Generate .config using target defconfig
           make lineageos_gtowifi_defconfig
           
-          # 2. Disable vDSO 32-bit targets in config
+          # 2. Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
           
-          # 3. Prepare kernel headers and generate Module.symvers
+          # 3. Prepare headers
           make prepare
           make modules_prepare
 
@@ -61,12 +60,13 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
-      - name: Comprehensive Patch for GCC 4.9 Compatibility
+      - name: Fully Disable -Werror and Unrecognized Flags
         run: |
           cd rtl88XXau
-          # Strip ALL -Wno-* and -Werror flags from all Makefiles in the repository
+          # Strip all warning-as-error flags across the entire driver tree
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
+          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
 
       - name: Compile rtl88XXau Module
         run: |
@@ -74,6 +74,7 @@ jobs:
           make ARCH=arm64 \
                CROSS_COMPILE=aarch64-linux-android- \
                KSRC=${{ github.workspace }} \
+               EXTRA_CFLAGS="-Wno-error -Wno-unused-variable -Wno-unused-value" \
                modules
 
       - name: Prepare Artifact Output
