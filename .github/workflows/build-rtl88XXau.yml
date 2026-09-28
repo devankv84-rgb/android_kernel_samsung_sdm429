@@ -37,7 +37,7 @@ jobs:
           # Disable strict GCC version check for older Android kernels
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
-      - name: Prepare Kernel Source Headers
+      - name: Prepare Kernel Source Headers & Module.symvers
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
@@ -53,21 +53,19 @@ jobs:
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
           
-          # 3. Prepare kernel headers for out-of-tree module compilation
+          # 3. Prepare kernel headers and generate Module.symvers
           make prepare
           make modules_prepare
 
       - name: Clone morrownr RTL8812AU Driver Repository
         run: |
-          # morrownr's repo has full compatibility patches for kernel 4.9 cfg80211 API
           git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
-      - name: Recursively Patch Driver Flags for GCC 4.9
+      - name: Comprehensive Patch for GCC 4.9 Compatibility
         run: |
           cd rtl88XXau
-          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Wno-stringop-overread//g' {} +
-          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Wno-cast-function-type//g' {} +
-          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Wno-implicit-fallthrough//g' {} +
+          # Strip ALL -Wno-* and -Werror flags from all Makefiles in the repository
+          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
 
       - name: Compile rtl88XXau Module
