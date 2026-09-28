@@ -41,8 +41,6 @@ jobs:
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
-          
-          # Satisfy the arch/arm64/Makefile:66 check without needing a 32-bit toolchain
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
           
           # Clean build directory
@@ -62,6 +60,15 @@ jobs:
       - name: Clone RTL88XXAU Driver Repository
         run: |
           git clone -b v5.6.4.2 https://github.com/aircrack-ng/rtl8812au.git rtl88XXau
+
+      - name: Patch RTL88XXAU Makefile for GCC 4.9 Compatibility
+        run: |
+          cd rtl88XXau
+          # Strip modern GCC flags that GCC 4.9 fails on
+          sed -i 's/-Wno-stringop-overread//g' Makefile || true
+          sed -i 's/-Wno-cast-function-type//g' Makefile || true
+          sed -i 's/-Wno-implicit-fallthrough//g' Makefile || true
+          sed -i 's/-Werror//g' Makefile || true
 
       - name: Compile rtl88XXau Module
         run: |
