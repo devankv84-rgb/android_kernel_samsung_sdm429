@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-module:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Kernel Source
@@ -62,7 +62,6 @@ jobs:
       - name: Prepare Artifact Output
         run: |
           mkdir -p output
-          # Copy whatever module output file was generated (.ko)
           find rtl88XXau -type f -name "*.ko" -exec cp {} output/ \;
 
       - name: Upload .ko Artifact
