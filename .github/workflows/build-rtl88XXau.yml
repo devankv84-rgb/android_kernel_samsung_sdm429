@@ -1,4 +1,4 @@
-name: Build Kernel Installer Zip and RTL88XXAU Module
+name: Build RTL88XXAU Wi-Fi Driver Module (.ko)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [ "*" ]
 
 jobs:
-  build-kernel-and-module:
+  build-module:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,12 +26,9 @@ jobs:
             git \
             python3 \
             zip \
-            unzip \
-            liblz4-tool \
-            lzop \
-            cpio
+            unzip
 
-      - name: Setup Toolchains (GCC 4.9)
+      - name: Setup GCC 4.9 Toolchain
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain64
           echo "$(pwd)/toolchain64/bin" >> $GITHUB_PATH
@@ -40,33 +37,27 @@ jobs:
         run: |
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
-      - name: Configure Kernel Options
+      - name: Prepare Kernel Source Headers & Disable Signature Enforcement
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=aarch64-linux-android-
           
-          # Clean build tree
+          # Clean build directory
           make clean && make mrproper
           
-          # Load defconfig
+          # Generate .config using target defconfig
           make lineageos_gtowifi_defconfig
           
-          # Disable Module Signature Enforcement so insmod never blocks unsigned/custom modules
-          scripts/config --disable CONFIG_MODULE_SIG_FORCE
-          scripts/config --disable CONFIG_MODULE_SIG_ALL
-          scripts/config --enable CONFIG_MODULE_SIG
-          
-          # Disable problematic vDSO flags
+          # Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
-
-      - name: Build Kernel Image
-        run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
           
-          # Compile Image and prepare headers
-          make -j$(nproc) Image.gz-dtb || make -j$(nproc) Image.gz || make -j$(nproc) Image
+          # Solution 2: Disable Module Signature Verification Enforcement
+          scripts/config --disable CONFIG_MODULE_SIG_FORCE
+          scripts/config --disable CONFIG_MODULE_SIG_ALL
+          
+          # Prepare headers and module symbol tables
           make prepare
           make modules_prepare
 
@@ -74,29 +65,31 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
-      - name: Patch Driver Source Code for Kernel 4.9
+      - name: Patch Driver Source Code for Kernel 4.9 & GCC 4.9
         run: |
           cd rtl88XXau
           
-          # Strip unrecognized warning flags and -Werror
+          # 1. Strip -Werror and unrecognized warning flags from Makefiles
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
 
-          # Patch cfg80211_roamed parameter compatibility
+          # 2. Python patch to update cfg80211_roamed version guards in ioctl_cfg80211.c
           python3 -c '
           path = "os_dep/linux/ioctl_cfg80211.c"
           with open(path, "r") as f:
               code = f.read()
 
+          # Lower threshold to treat Linux 4.9 kernel headers as using struct cfg80211_roam_info
           code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
           code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
           
           with open(path, "w") as f:
               f.write(code)
+          print("Successfully patched cfg80211_roamed version guards in ioctl_cfg80211.c")
           '
 
-      - name: Compile RTL88XXAU Module
+      - name: Compile rtl88XXau Module
         run: |
           cd rtl88XXau
           make ARCH=arm64 \
@@ -106,40 +99,14 @@ jobs:
                EXTRA_CFLAGS="-I${{ github.workspace }}/rtl88XXau/include -Wno-error -Wno-unused-variable -Wno-unused-value" \
                modules
 
-      - name: Package Kernel into Flashable AnyKernel3 Zip
-        run: |
-          # 1. Clone AnyKernel3 template
-          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          
-          # 2. Configure target partition inside anykernel.sh
-          sed -i 's/BLOCK=auto;/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/g' AnyKernel3/anykernel.sh
-          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=auto;/g' AnyKernel3/anykernel.sh
-          
-          # 3. Locate and copy the built kernel image into AnyKernel3 directory
-          KERNEL_BIN=$(find arch/arm64/boot/ -type f \( -name "Image.gz-dtb" -o -name "Image.gz" -o -name "Image" \) | head -n 1)
-          
-          if [ -n "$KERNEL_BIN" ]; then
-            echo "Copying $KERNEL_BIN to AnyKernel3 directory..."
-            cp "$KERNEL_BIN" AnyKernel3/Image.gz-dtb || cp "$KERNEL_BIN" AnyKernel3/Image.gz || cp "$KERNEL_BIN" AnyKernel3/Image
-          else
-            echo "Error: Kernel binary not found!"
-            exit 1
-          fi
-          
-          # 4. Zip the AnyKernel3 release package
-          cd AnyKernel3
-          zip -r9 ../kernel-lineageos-gtowifi-flashable.zip * -x .git README.md *placeholder
-          cd ..
-
-      - name: Prepare Output Directory
+      - name: Prepare Artifact Output
         run: |
           mkdir -p output
-          mv kernel-lineageos-gtowifi-flashable.zip output/
-          find rtl88XXau/ -type f -name "*.ko" -exec cp {} output/ \;
+          find rtl88XXau -type f -name "*.ko" -exec cp {} output/ \;
 
-      - name: Upload Artifacts
+      - name: Upload .ko Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lineageos-kernel-installer-and-module
-          path: output/*
+          name: rtl88XXau-driver-module
+          path: output/*.ko
           
