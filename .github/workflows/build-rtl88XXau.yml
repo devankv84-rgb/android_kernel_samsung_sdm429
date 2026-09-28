@@ -56,9 +56,10 @@ jobs:
           make prepare
           make modules_prepare
 
-      - name: Clone RTL8812AU Driver Repository
+            - name: Clone RTL8812AU Driver Repository (v5.13.6 Branch)
         run: |
-          git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
+          git clone -b v5.13.6 https://github.com/aircrack-ng/rtl8812au.git rtl88XXau
+          
 
       - name: Fully Disable -Werror and Fix cfg80211_roamed API Mismatch
         run: |
