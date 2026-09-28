@@ -43,18 +43,23 @@ jobs:
           # 1. Clone driver into kernel source tree
           git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
 
-          # 2. Add driver references to Kconfig and Makefile
+          # 2. Append Kconfig and Makefile targets
           echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
           echo 'obj-$(CONFIG_RTL88XXAU) += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # 3. Strip -Werror and unrecognized GCC 4.9 flags
-          find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
-          find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
-          find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
+          # 3. Patch driver Makefile for static in-tree compilation (obj-y)
+          cd drivers/net/wireless/rtl88XXau
+          sed -i 's/CONFIG_RTL8821AU = m/CONFIG_RTL8821AU = y/g' Makefile || true
+          sed -i 's/CONFIG_RTL8812AU = m/CONFIG_RTL8812AU = y/g' Makefile || true
 
-          # 4. Patch cfg80211_roamed parameter compatibility in driver
+          # Strip -Werror and modern warning flags for GCC 4.9
+          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
+          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
+          find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
+
+          # Patch cfg80211_roamed version guards in os_dep/linux/ioctl_cfg80211.c
           python3 -c '
-          path = "drivers/net/wireless/rtl88XXau/os_dep/linux/ioctl_cfg80211.c"
+          path = "os_dep/linux/ioctl_cfg80211.c"
           with open(path, "r") as f:
               code = f.read()
 
@@ -63,7 +68,7 @@ jobs:
 
           with open(path, "w") as f:
               f.write(code)
-          print("Successfully patched driver for kernel 4.9")
+          print("Successfully patched driver ioctl_cfg80211.c for kernel 4.9")
           '
 
       - name: Configure Kernel Build
@@ -88,8 +93,8 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # Compile kernel image with devicetree appended
-          make -j$(nproc) Image.gz-dtb || make -j$(nproc) Image.gz
+          # Run make job; if parallel build fails, fall back to single thread to isolate exact error
+          make -j$(nproc) Image.gz-dtb || make Image.gz-dtb V=1
 
       - name: Package into AnyKernel3 Flashable ZIP
         run: |
