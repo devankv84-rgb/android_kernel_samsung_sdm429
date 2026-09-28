@@ -45,28 +45,33 @@ jobs:
           # Clean build directory
           make clean && make mrproper
           
-          # 1. Generate .config using target defconfig
+          # Generate .config using target defconfig
           make lineageos_gtowifi_defconfig
           
-          # 2. Disable vDSO 32-bit targets
+          # Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
           
-          # 3. Prepare headers
+          # Prepare headers
           make prepare
           make modules_prepare
 
-      - name: Clone morrownr RTL8812AU Driver Repository
+      - name: Clone RTL8812AU Driver Repository
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
-      - name: Fully Disable -Werror and Unrecognized Flags
+      - name: Fully Disable -Werror and Fix cfg80211_roamed API Mismatch
         run: |
           cd rtl88XXau
-          # Strip all warning-as-error flags across the entire driver tree
+          
+          # 1. Strip all warning-as-error and modern GCC flags
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
+
+          # 2. Patch cfg80211_roamed parameter compatibility in os_dep/linux/ioctl_cfg80211.c
+          # Forces the macro guard to treat Linux 4.9+ as taking struct cfg80211_roam_info
+          sed -i 's/LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)/LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)/g' os_dep/linux/ioctl_cfg80211.c || true
 
       - name: Compile rtl88XXau Module
         run: |
