@@ -58,14 +58,10 @@ jobs:
           make prepare
           make modules_prepare
           
-          # Build certs target or generate key pair manually if missing
+          # Create certs directory and generate key pair if missing
           mkdir -p certs
           if [ ! -f "certs/signing_key.pem" ] && [ ! -f "signing_key.pem" ]; then
             echo "Generating module signing key pair..."
-            openssl req -new -nodes -utf8 -sha256 -days 3650 -batch -x509 \
-              -config certs/default_x509.genkey \
-              -outform PEM -out certs/signing_key.pem \
-              -keyout certs/signing_key.pem || \
             openssl req -new -nodes -utf8 -sha256 -days 3650 -batch -x509 \
               -subj "/CN=Build Module Signing Key/" \
               -outform PEM -out certs/signing_key.pem \
@@ -112,9 +108,19 @@ jobs:
                EXTRA_CFLAGS="-I${{ github.workspace }}/rtl88XXau/include -Wno-error -Wno-unused-variable -Wno-unused-value" \
                modules
 
-      - name: Sign Kernel Module
+      - name: Locate and Sign Kernel Module
         run: |
-          # Use script sign-file to attach cryptographic signature
+          # 1. Find the compiled .ko file dynamically
+          MODULE_PATH=$(find rtl88XXau -type f -name "*.ko" | head -n 1)
+          
+          if [ -z "$MODULE_PATH" ]; then
+            echo "Error: Compilation finished, but no .ko file was found!"
+            exit 1
+          fi
+
+          echo "Found compiled module at: $MODULE_PATH"
+
+          # 2. Locate signing keys
           KEY_PATH=""
           CERT_PATH=""
 
@@ -127,8 +133,8 @@ jobs:
           fi
 
           if [ -n "$KEY_PATH" ]; then
-            echo "Signing rtl88XXau.ko using $KEY_PATH..."
-            scripts/sign-file sha256 "$KEY_PATH" "$CERT_PATH" rtl88XXau/rtl88XXau.ko
+            echo "Signing $MODULE_PATH using $KEY_PATH..."
+            scripts/sign-file sha256 "$KEY_PATH" "$CERT_PATH" "$MODULE_PATH"
           else
             echo "Error: Could not locate signing key or certificate files."
             exit 1
