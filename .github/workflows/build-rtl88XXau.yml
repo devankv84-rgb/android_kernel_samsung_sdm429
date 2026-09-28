@@ -53,7 +53,7 @@ jobs:
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
           
-          # Prepare headers
+          # Prepare headers and internal keys for module signing
           make prepare
           make modules_prepare
 
@@ -76,9 +76,6 @@ jobs:
           with open(path, "r") as f:
               code = f.read()
 
-          # Replace old multi-arg cfg80211_roamed invocation with modern struct cfg80211_roam_info
-          old_pattern = """#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0))"""
-          
           # Force the version macro guard to catch 4.9+ backports
           code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
           code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
@@ -98,14 +95,28 @@ jobs:
                EXTRA_CFLAGS="-I${{ github.workspace }}/rtl88XXau/include -Wno-error -Wno-unused-variable -Wno-unused-value" \
                modules
 
+      - name: Sign Kernel Module (Solution 1)
+        run: |
+          # Use kernel script sign-file to append cryptographic signature to .ko
+          if [ -f "certs/signing_key.pem" ]; then
+            echo "Signing module using certs/signing_key.pem..."
+            scripts/sign-file sha256 certs/signing_key.pem certs/signing_key.x509 rtl88XXau/rtl88XXau.ko
+          elif [ -f "signing_key.pem" ]; then
+            echo "Signing module using root signing_key.pem..."
+            scripts/sign-file sha256 signing_key.pem signing_key.x509 rtl88XXau/rtl88XXau.ko
+          else
+            echo "Error: Could not locate signing keys in kernel build directory."
+            exit 1
+          fi
+
       - name: Prepare Artifact Output
         run: |
           mkdir -p output
           find rtl88XXau -type f -name "*.ko" -exec cp {} output/ \;
 
-      - name: Upload .ko Artifact
+      - name: Upload Signed .ko Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rtl88XXau-driver-module
+          name: rtl88XXau-driver-module-signed
           path: output/*.ko
           
