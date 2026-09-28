@@ -34,6 +34,7 @@ jobs:
 
       - name: Patch Compiler Check in Kernel Source
         run: |
+          # Disable strict GCC version check for older Android kernels
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
       - name: Prepare Kernel Source Headers
@@ -45,21 +46,21 @@ jobs:
           # Clean build directory
           make clean && make mrproper
           
-          # Generate .config using target defconfig
+          # 1. Generate .config using your target defconfig
           make lineageos_gtowifi_defconfig
           
-          # Disable vDSO 32-bit targets
+          # 2. Disable vDSO 32-bit targets in config
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
           
-          # Prepare headers
+          # 3. Prepare kernel headers for out-of-tree module compilation
           make prepare
           make modules_prepare
 
-      - name: Clone NetHunter-Patched RTL88XXAU Driver
+      - name: Clone morrownr RTL8812AU Driver Repository
         run: |
-          # Use Kimoda's NetHunter branch which fixes cfg80211 kernel API mismatches
-          git clone -b v5.13.6 https://github.com/kimoda/rtl8812au.git rtl88XXau || git clone -b v5.6.4.2 https://github.com/aircrack-ng/rtl8812au.git rtl88XXau
+          # morrownr's repo has full compatibility patches for kernel 4.9 cfg80211 API
+          git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
       - name: Recursively Patch Driver Flags for GCC 4.9
         run: |
@@ -75,7 +76,6 @@ jobs:
           make ARCH=arm64 \
                CROSS_COMPILE=aarch64-linux-android- \
                KSRC=${{ github.workspace }} \
-               V=1 \
                modules
 
       - name: Prepare Artifact Output
