@@ -24,6 +24,7 @@ jobs:
             libssl-dev \
             libncurses5-dev \
             git \
+            python3 \
             zip \
             unzip
 
@@ -60,17 +61,32 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
-      - name: Fully Disable -Werror and Fix cfg80211_roamed API Mismatch
+      - name: Patch Driver Source Code for Kernel 4.9 & GCC 4.9
         run: |
           cd rtl88XXau
           
-          # 1. Strip all warning-as-error and modern GCC flags
+          # 1. Strip -Werror and unrecognized warning flags from Makefiles
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
 
-          # 2. Patch cfg80211_roamed parameter compatibility in os_dep/linux/ioctl_cfg80211.c
-          sed -i 's/LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)/LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)/g' os_dep/linux/ioctl_cfg80211.c || true
+          # 2. Python patch to update cfg80211_roamed parameter call inside ioctl_cfg80211.c
+          python3 -c '
+          path = "os_dep/linux/ioctl_cfg80211.c"
+          with open(path, "r") as f:
+              code = f.read()
+
+          # Replace old multi-arg cfg80211_roamed invocation with modern struct cfg80211_roam_info
+          old_pattern = """#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0))"""
+          
+          # Force the version macro guard to catch 4.9+ backports
+          code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
+          code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
+          
+          with open(path, "w") as f:
+              f.write(code)
+          print("Successfully patched cfg80211_roamed version guards in ioctl_cfg80211.c")
+          '
 
       - name: Compile rtl88XXau Module
         run: |
