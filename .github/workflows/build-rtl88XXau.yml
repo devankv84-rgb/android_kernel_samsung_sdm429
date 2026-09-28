@@ -80,8 +80,9 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Fix missing header include path in drivers/bluetooth/Makefile
+          # Fix missing header include paths for Bluetooth and Adreno GPU MSM drivers
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
+          echo "ccflags-y += -Idrivers/gpu/msm" >> drivers/gpu/msm/Makefile
 
           # Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
