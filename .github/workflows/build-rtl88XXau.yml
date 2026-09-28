@@ -56,10 +56,9 @@ jobs:
           make prepare
           make modules_prepare
 
-      - name: Clone RTL8812AU Driver Repository (v5.13.6 Branch)
+      - name: Clone RTL8812AU Driver Repository
         run: |
-          git clone -b v5.13.6 https://github.com/aircrack-ng/rtl8812au.git rtl88XXau
-          
+          git clone https://github.com/morrownr/8812au-20210820.git rtl88XXau
 
       - name: Fully Disable -Werror and Fix cfg80211_roamed API Mismatch
         run: |
@@ -71,7 +70,6 @@ jobs:
           find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
 
           # 2. Patch cfg80211_roamed parameter compatibility in os_dep/linux/ioctl_cfg80211.c
-          # Forces the macro guard to treat Linux 4.9+ as taking struct cfg80211_roam_info
           sed -i 's/LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)/LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)/g' os_dep/linux/ioctl_cfg80211.c || true
 
       - name: Compile rtl88XXau Module
@@ -80,7 +78,8 @@ jobs:
           make ARCH=arm64 \
                CROSS_COMPILE=aarch64-linux-android- \
                KSRC=${{ github.workspace }} \
-               EXTRA_CFLAGS="-Wno-error -Wno-unused-variable -Wno-unused-value" \
+               USER_EXTRA_CFLAGS="-I${{ github.workspace }}/rtl88XXau/include -Wno-error -Wno-unused-variable -Wno-unused-value" \
+               EXTRA_CFLAGS="-I${{ github.workspace }}/rtl88XXau/include -Wno-error -Wno-unused-variable -Wno-unused-value" \
                modules
 
       - name: Prepare Artifact Output
