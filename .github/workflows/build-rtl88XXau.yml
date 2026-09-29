@@ -76,15 +76,29 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # 1. Disable DT overlay config options causing DTC to append -@
+          # Disable DT overlay config options causing DTC issues
           scripts/config --disable CONFIG_BUILD_ARM64_DT_OVERLAY || true
           scripts/config --disable CONFIG_DTS_EAGLE || true
 
-          # 2. Hard-strip -@ from scripts/Makefile.lib
+          # Hard-strip -@ from scripts/Makefile.lib and DTS Makefiles
           sed -i 's/-@//g' scripts/Makefile.lib
           find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.lib" -o -name "*.inc" \) -exec sed -i 's/-@//g' {} +
 
-          # Fix missing header include paths globally across Qualcomm and USB drivers
+          # Comment out missing display panel nodes in msm8937-mtp.dtsi
+          python3 -c '
+          import os, re
+          dtsi_path = "arch/arm64/boot/dts/qcom/msm8937-mtp.dtsi"
+          if os.path.exists(dtsi_path):
+              with open(dtsi_path, "r") as f:
+                  content = f.read()
+              content = re.sub(r"(&dsi_truly_1080_vid\s*\{[^}]*\};)", r"/* \1 */", content, flags=re.DOTALL)
+              content = re.sub(r"(&dsi_truly_1080_cmd\s*\{[^}]*\};)", r"/* \1 */", content, flags=re.DOTALL)
+              with open(dtsi_path, "w") as f:
+                  f.write(content)
+              print("Patched missing panel node labels in msm8937-mtp.dtsi")
+          '
+
+          # Fix missing header include paths globally
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
           echo "ccflags-y += -Idrivers/gpu/msm" >> drivers/gpu/msm/Makefile
           find drivers/media/platform/msm/camera_v2 -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/media/platform/msm/camera_v2 -Idrivers/media/platform/msm/camera_v2/common -Idrivers/media/platform/msm/camera_v2/isp -Idrivers/media/platform/msm/camera_v2/sensor -Idrivers/media/platform/msm/camera_v2/sensor/io -Idrivers/media/platform/msm/camera_v2/sensor/cci -Idrivers/media/platform/msm/camera_v2/pproc/vpe -Idrivers/media/platform/msm/camera_v2/module" >> "$1"' _ {} \;
