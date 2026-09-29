@@ -27,7 +27,8 @@ jobs:
             python3 \
             zip \
             unzip \
-            liblz4-tool
+            liblz4-tool \
+            device-tree-compiler
 
       - name: Setup GCC 4.9 Toolchain
         run: |
@@ -79,6 +80,10 @@ jobs:
 
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
+
+          # Remove invalid -@ flag from dtc invocation in Kbuild
+          sed -i 's/DTC_FLAGS += -@//g' scripts/Makefile.lib || true
+          sed -i 's/-@//g' scripts/Makefile.lib || true
 
           # Fix missing header include paths globally across Qualcomm and USB subsystem drivers
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
