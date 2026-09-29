@@ -80,10 +80,10 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Fix missing header include paths for Bluetooth, MSM GPU, and MSM Camera drivers
+          # Fix missing header include paths for Bluetooth, MSM GPU, and MSM Camera drivers globally
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
           echo "ccflags-y += -Idrivers/gpu/msm" >> drivers/gpu/msm/Makefile
-          echo "ccflags-y += -Idrivers/media/platform/msm/camera_v2 -Idrivers/media/platform/msm/camera_v2/common -Idrivers/media/platform/msm/camera_v2/isp" >> drivers/media/platform/msm/camera_v2/Makefile
+          find drivers/media/platform/msm/camera_v2 -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/media/platform/msm/camera_v2 -Idrivers/media/platform/msm/camera_v2/common -Idrivers/media/platform/msm/camera_v2/isp" >> "$1"' _ {} \;
 
           # Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
