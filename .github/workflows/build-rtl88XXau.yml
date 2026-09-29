@@ -43,10 +43,11 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
 
+          # Link driver to wireless Kconfig & Makefile using the correct CONFIG_8812AU symbol
           echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
-          echo 'obj-$(CONFIG_RTL88XXAU) += rtl88XXau/' >> drivers/net/wireless/Makefile
+          echo 'obj-$(CONFIG_8812AU) += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # Force enable both RTL8821AU (TP-Link T2U Plus 2357:0120) and RTL8812AU chipsets
+          # Force enable both RTL8821AU (for TP-Link T2U Plus) and RTL8812AU inside the driver Makefile
           sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
           sed -i 's/CONFIG_RTL8812AU = n/CONFIG_RTL8812AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
 
@@ -103,8 +104,8 @@ jobs:
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
 
-          # Statically build RTL88XXAU driver directly into kernel core
-          scripts/config --enable CONFIG_RTL88XXAU
+          # Statically build RTL88XXAU driver using correct CONFIG_8812AU symbol
+          scripts/config --enable CONFIG_8812AU
 
       - name: Compile Kernel Image (Bypass DTB Build)
         run: |
