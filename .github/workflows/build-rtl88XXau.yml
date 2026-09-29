@@ -80,11 +80,12 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Fix missing header include paths for Bluetooth, MSM GPU, MSM Camera, and MSM IPA drivers
+          # Fix missing header include paths globally across Qualcomm and USB subsystem drivers
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
           echo "ccflags-y += -Idrivers/gpu/msm" >> drivers/gpu/msm/Makefile
           find drivers/media/platform/msm/camera_v2 -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/media/platform/msm/camera_v2 -Idrivers/media/platform/msm/camera_v2/common -Idrivers/media/platform/msm/camera_v2/isp -Idrivers/media/platform/msm/camera_v2/sensor -Idrivers/media/platform/msm/camera_v2/sensor/io -Idrivers/media/platform/msm/camera_v2/sensor/cci -Idrivers/media/platform/msm/camera_v2/pproc/vpe -Idrivers/media/platform/msm/camera_v2/module" >> "$1"' _ {} \;
           find drivers/platform/msm/ipa -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/platform/msm/ipa/ipa_clients -Idrivers/platform/msm/ipa/ipa_v2 -Idrivers/platform/msm/ipa/ipa_v3 -Idrivers/platform/msm/ipa" >> "$1"' _ {} \;
+          find drivers/usb/gadget -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/usb/gadget -Idrivers/usb/gadget/function -Idrivers/usb/gadget/udc" >> "$1"' _ {} \;
 
           # Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
