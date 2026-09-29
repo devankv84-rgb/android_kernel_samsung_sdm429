@@ -46,11 +46,11 @@ jobs:
           echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
           echo 'obj-$(CONFIG_RTL88XXAU) += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # Force enable both RTL8821AU (for TP-Link T2U Plus) and RTL8812AU chipsets
-          sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile || true
-          sed -i 's/CONFIG_RTL8812AU = n/CONFIG_RTL8812AU = y/g' drivers/net/wireless/rtl88XXau/Makefile || true
+          # Force enable both RTL8821AU (TP-Link T2U Plus 2357:0120) and RTL8812AU chipsets
+          sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
+          sed -i 's/CONFIG_RTL8812AU = n/CONFIG_RTL8812AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
 
-          # Clean compiler flag warnings & errors
+          # Clean compiler flag warnings & errors for GCC 4.9
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
@@ -78,6 +78,13 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
+          # Set local kernel version string (-devutty+)
+          scripts/config --set-str CONFIG_LOCALVERSION "-devutty"
+
+          # Enable /proc/config.gz
+          scripts/config --enable CONFIG_IKCONFIG
+          scripts/config --enable CONFIG_IKCONFIG_PROC
+
           # Fix missing header include paths globally
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
           echo "ccflags-y += -Idrivers/gpu/msm" >> drivers/gpu/msm/Makefile
@@ -91,10 +98,6 @@ jobs:
             find techpack/audio -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sh -c 'echo "ccflags-y += -w -Wno-error" >> "$1"' _ {} \;
             find techpack/audio -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/__builtin_add_overflow(\([^,]*\),\s*\([^,]*\),\s*\([^)]*\))/(*(\3) = (\1) + (\2), 0)/g' {} +
           fi
-
-          # Enable /proc/config.gz for runtime kernel inspection
-          scripts/config --enable CONFIG_IKCONFIG
-          scripts/config --enable CONFIG_IKCONFIG_PROC
 
           # Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
