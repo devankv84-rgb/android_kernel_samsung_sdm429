@@ -84,18 +84,29 @@ jobs:
           sed -i 's/-@//g' scripts/Makefile.lib
           find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.lib" -o -name "*.inc" \) -exec sed -i 's/-@//g' {} +
 
-          # Comment out missing display panel nodes in msm8937-mtp.dtsi
+          # Patch out unresolved phandle references across qcom DTS files
           python3 -c '
-          import os, re
-          dtsi_path = "arch/arm64/boot/dts/qcom/msm8937-mtp.dtsi"
-          if os.path.exists(dtsi_path):
-              with open(dtsi_path, "r") as f:
+          import os, glob, re
+          dts_dir = "arch/arm64/boot/dts/qcom"
+          missing_labels = [
+              "pm8953_gpios",
+              "dsi_truly_1080_vid",
+              "dsi_truly_1080_cmd",
+              "dsi_adv7533_1080p"
+          ]
+          for filepath in glob.glob(f"{dts_dir}/*.dts*"):
+              with open(filepath, "r") as f:
                   content = f.read()
-              content = re.sub(r"(&dsi_truly_1080_vid\s*\{[^}]*\};)", r"/* \1 */", content, flags=re.DOTALL)
-              content = re.sub(r"(&dsi_truly_1080_cmd\s*\{[^}]*\};)", r"/* \1 */", content, flags=re.DOTALL)
-              with open(dtsi_path, "w") as f:
-                  f.write(content)
-              print("Patched missing panel node labels in msm8937-mtp.dtsi")
+              modified = False
+              for label in missing_labels:
+                  pattern = re.compile(rf"(&{label}\s*\{{[^}}]*\}};|[^;\n]*&{label}[^;\n]*;)")
+                  if pattern.search(content):
+                      content = pattern.sub(r"/* \1 */", content)
+                      modified = True
+              if modified:
+                  with open(filepath, "w") as f:
+                      f.write(content)
+                  print(f"Patched missing phandle references in {filepath}")
           '
 
           # Fix missing header include paths globally
