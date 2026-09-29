@@ -43,12 +43,14 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
 
-          # Force unconditional inclusion (obj-y) in drivers/net/wireless/Makefile
+          # Force unconditional inclusion in drivers/net/wireless/Makefile
           echo 'obj-y += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # Force enable both RTL8821AU (TP-Link T2U Plus) and RTL8812AU inside internal Makefile
+          # Force enable RTL8821AU (TP-Link T2U Plus 2357:0120) and disable power saving inside internal Makefile
           sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
           sed -i 's/CONFIG_RTL8812AU = n/CONFIG_RTL8812AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
+          sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl88XXau/Makefile
+          sed -i 's/CONFIG_WIFI_MONITOR = n/CONFIG_WIFI_MONITOR = y/g' drivers/net/wireless/rtl88XXau/Makefile
 
           # Clean compiler flag warnings & errors for GCC 4.9
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
@@ -78,11 +80,14 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Enable core wireless flags
+          # Enable core wireless & USB networking drivers
           scripts/config --enable CONFIG_NETDEVICES
           scripts/config --enable CONFIG_WLAN
           scripts/config --enable CONFIG_CFG80211
           scripts/config --enable CONFIG_CFG80211_WEXT
+          scripts/config --enable CONFIG_USB_NET_DRIVERS
+          scripts/config --enable CONFIG_USB_USBNET
+          scripts/config --enable CONFIG_NET_RADIO
 
           # Set local kernel version string (-devutty+)
           scripts/config --set-str CONFIG_LOCALVERSION "-devutty"
