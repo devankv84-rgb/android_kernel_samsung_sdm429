@@ -76,16 +76,13 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Build/ensure scripts/dtc directory exists and replace in-tree dtc with modern system dtc
-          make scripts/dtc/ || true
-          if [ -f "$(which dtc)" ]; then
-            mkdir -p scripts/dtc
-            cp $(which dtc) scripts/dtc/dtc
-            chmod +x scripts/dtc/dtc
-          fi
+          # 1. Disable DT overlay config options causing DTC to append -@
+          scripts/config --disable CONFIG_BUILD_ARM64_DT_OVERLAY || true
+          scripts/config --disable CONFIG_DTS_EAGLE || true
 
-          # Strip -@ option from DTC_FLAGS across all Makefiles
-          find scripts/ arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.lib" -o -name "*.inc" \) -exec sed -i 's/-@//g' {} +
+          # 2. Hard-strip -@ from scripts/Makefile.lib
+          sed -i 's/-@//g' scripts/Makefile.lib
+          find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.lib" -o -name "*.inc" \) -exec sed -i 's/-@//g' {} +
 
           # Fix missing header include paths globally across Qualcomm and USB drivers
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
