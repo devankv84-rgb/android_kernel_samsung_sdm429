@@ -76,39 +76,6 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Disable DT overlay config options causing DTC issues
-          scripts/config --disable CONFIG_BUILD_ARM64_DT_OVERLAY || true
-          scripts/config --disable CONFIG_DTS_EAGLE || true
-
-          # Hard-strip -@ from scripts/Makefile.lib and DTS Makefiles
-          sed -i 's/-@//g' scripts/Makefile.lib
-          find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.lib" -o -name "*.inc" \) -exec sed -i 's/-@//g' {} +
-
-          # Patch out unresolved phandle references across qcom DTS files
-          python3 -c '
-          import os, glob, re
-          dts_dir = "arch/arm64/boot/dts/qcom"
-          missing_labels = [
-              "pm8953_gpios",
-              "dsi_truly_1080_vid",
-              "dsi_truly_1080_cmd",
-              "dsi_adv7533_1080p"
-          ]
-          for filepath in glob.glob(f"{dts_dir}/*.dts*"):
-              with open(filepath, "r") as f:
-                  content = f.read()
-              modified = False
-              for label in missing_labels:
-                  pattern = re.compile(rf"(&{label}\s*\{{[^}}]*\}};|[^;\n]*&{label}[^;\n]*;)")
-                  if pattern.search(content):
-                      content = pattern.sub(r"/* \1 */", content)
-                      modified = True
-              if modified:
-                  with open(filepath, "w") as f:
-                      f.write(content)
-                  print(f"Patched missing phandle references in {filepath}")
-          '
-
           # Fix missing header include paths globally
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
           echo "ccflags-y += -Idrivers/gpu/msm" >> drivers/gpu/msm/Makefile
@@ -116,37 +83,31 @@ jobs:
           find drivers/platform/msm/ipa -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/platform/msm/ipa/ipa_clients -Idrivers/platform/msm/ipa/ipa_v2 -Idrivers/platform/msm/ipa/ipa_v3 -Idrivers/platform/msm/ipa" >> "$1"' _ {} \;
           find drivers/usb/gadget -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/usb/gadget -Idrivers/usb/gadget/function -Idrivers/usb/gadget/udc" >> "$1"' _ {} \;
 
-          # Suppress warning-as-error inside techpack/audio
+          # Suppress warnings-as-errors inside techpack/audio
           if [ -d "techpack/audio" ]; then
             find techpack/audio -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
             find techpack/audio -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sh -c 'echo "ccflags-y += -w -Wno-error" >> "$1"' _ {} \;
-            find techpack/audio -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/__builtin_add_overflow(\([^,]*\),\s*\([^,]*\),\s*\([^)]*\))/(*(\3) = (\1) + (\2), 0)/g' {} +
           fi
 
           # Disable vDSO 32-bit targets
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
 
-          # Statically build driver directly into kernel core
+          # Statically build RTL88XXAU driver directly into kernel core
           scripts/config --enable CONFIG_RTL88XXAU
 
-      - name: Compile Full Kernel Image
+      - name: Compile Kernel Image (Bypass DTB Build)
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          make -j$(nproc) Image.gz-dtb || make Image.gz-dtb V=1
+          make -j$(nproc) Image.gz
 
       - name: Package into AnyKernel3 Flashable ZIP
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
-
-          if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
-            cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          elif [ -f "arch/arm64/boot/Image.gz" ]; then
-            cp arch/arm64/boot/Image.gz AnyKernel3/
-          fi
+          cp arch/arm64/boot/Image.gz AnyKernel3/
 
           cd AnyKernel3
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel with RTL88XXAU/g' anykernel.sh
