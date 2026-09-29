@@ -81,9 +81,14 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Remove invalid -@ flag from dtc invocation in Kbuild
-          sed -i 's/DTC_FLAGS += -@//g' scripts/Makefile.lib || true
-          sed -i 's/-@//g' scripts/Makefile.lib || true
+          # Replace in-tree dtc binary with modern system dtc
+          if [ -f "$(which dtc)" ]; then
+            mkdir -p scripts/dtc
+            cp $(which dtc) scripts/dtc/dtc
+          fi
+
+          # Strip -@ from all Kbuild/DTS Makefiles
+          find scripts/ arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.lib" \) -exec sed -i 's/-@//g' {} +
 
           # Fix missing header include paths globally across Qualcomm and USB subsystem drivers
           echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
