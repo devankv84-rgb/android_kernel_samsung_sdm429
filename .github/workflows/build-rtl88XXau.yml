@@ -43,17 +43,45 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
 
-          # Link driver into wireless Makefile directly
+          # Link driver statically into wireless Makefile
           echo 'obj-y += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # Force RTL8821AU build target for TP-Link Archer T2U Plus (2357:0120)
+          # Force RTL8821AU mode inside driver Makefile for TP-Link T2U Plus (2357:0120)
           sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
           sed -i 's/CONFIG_RTL8812AU = y/CONFIG_RTL8812AU = n/g' drivers/net/wireless/rtl88XXau/Makefile
           sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl88XXau/Makefile
           sed -i 's/CONFIG_WIFI_MONITOR = n/CONFIG_WIFI_MONITOR = y/g' drivers/net/wireless/rtl88XXau/Makefile
 
-          # Inject preprocessor flags forcing RTL8821A chip definitions
-          echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A -DCONFIG_FORCE_RTL8821A" >> drivers/net/wireless/rtl88XXau/Makefile
+          # Inject flags forcing RTL8821A chip definitions
+          echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A -DCONFIG_FORCE_RTL8821A -DRTW_USE_CFG80211_STA_EVENT" >> drivers/net/wireless/rtl88XXau/Makefile
+
+          # Patch os_intfs.c to force module_init execution when compiled statically (obj-y)
+          python3 -c '
+          path = "drivers/net/wireless/rtl88XXau/os_dep/linux/os_intfs.c"
+          with open(path, "r") as f:
+              code = f.read()
+
+          # Force module_init initialization code to execute during boot
+          code = code.replace("#ifdef MODULE", "#if 1")
+          code = code.replace("#ifndef MODULE", "#if 0")
+
+          with open(path, "w") as f:
+              f.write(code)
+          print("Patched os_intfs.c for static kernel initialization")
+          '
+
+          # Patch usb_intf.c to force CONFIG_RTL8821AU definition at header level
+          python3 -c '
+          path = "drivers/net/wireless/rtl88XXau/os_dep/linux/usb_intf.c"
+          with open(path, "r") as f:
+              code = f.read()
+
+          code = "#define CONFIG_RTL8821AU\n#define CONFIG_RTL8821A\n" + code
+
+          with open(path, "w") as f:
+              f.write(code)
+          print("Patched usb_intf.c for 2357:0120 USB ID binding")
+          '
 
           # Clean compiler flag warnings for GCC 4.9
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
