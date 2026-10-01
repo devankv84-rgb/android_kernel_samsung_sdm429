@@ -35,27 +35,28 @@ jobs:
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain64
           echo "$(pwd)/toolchain64/bin" >> $GITHUB_PATH
 
-      - name: Patch Compiler Check & Fix Prima WLAN Driver Build
+      - name: Patch Compiler Checks, Prima WLAN & DTC Rules
         run: |
           # Disable GCC version requirement check
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
-          # Patch Prima WLAN driver to prevent compilation errors
+          # 1. Fix Device Tree Compiler (DTC) Makefile flags to prevent stopping on warnings
+          if [ -f "scripts/Makefile.lib" ]; then
+            echo "Patching scripts/Makefile.lib for DTC..."
+            sed -i 's/DTC_FLAGS += -Werror/DTC_FLAGS += -Wno-error/g' scripts/Makefile.lib || true
+            sed -i 's/DTC_FLAGS :=/DTC_FLAGS := -Wno-unit_address_vs_reg -Wno-graph_child_address -Wno-interrupt_provider/g' scripts/Makefile.lib || true
+          fi
+
+          # 2. Patch Prima WLAN driver to prevent compilation errors
           if [ -d "drivers/staging/prima" ]; then
             echo "Patching drivers/staging/prima build flags..."
-
-            # 1. Force remove -Werror and add -w (suppress warnings) to ALL Prima Makefiles
             find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
             find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sh -c 'echo "ccflags-y += -w -Wno-error -Wno-enum-compare -Wno-pointer-sign" >> "$1"' _ {} \;
 
-            # 2. Strip Clang-specific warnings that GCC 4.9 rejects
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-non-literal-null-conversion//g' {} +
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-typedef-redefinition//g' {} +
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-parentheses-equality//g' {} +
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-pointer-bool-conversion//g' {} +
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-enum-conversion//g' {} +
+            # Strip Clang-specific warnings that GCC 4.9 rejects
+            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
 
-            # 3. Patch struct completion format specifier in wlan_qct_wda.c
+            # Fix struct completion format specifier in wlan_qct_wda.c
             if [ -f "drivers/staging/prima/CORE/WDA/src/wlan_qct_wda.c" ]; then
               sed -i 's/"ADD BA : Not in connected state.Add delay : %d",pWDA->addBa_responce_delay/"ADD BA : Not in connected state."/g' drivers/staging/prima/CORE/WDA/src/wlan_qct_wda.c
             fi
@@ -177,7 +178,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # Compile Image.gz and DTB files
+          # Compile Image.gz and DTBs
           make -j$(nproc) Image.gz dtbs
 
           # Attempt native Image.gz-dtb target
