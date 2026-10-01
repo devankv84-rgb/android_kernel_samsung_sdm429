@@ -1,9 +1,12 @@
-name: Build Kernel & AnyKernel3 Flashable Package
+name: Build Kernel & Publish Odin Flashable Release
 
 on:
   workflow_dispatch:
   push:
     branches: [ "*" ]
+
+permissions:
+  contents: write
 
 jobs:
   build-kernel:
@@ -25,8 +28,7 @@ jobs:
             libncurses5-dev \
             git \
             python3 \
-            zip \
-            unzip \
+            tar \
             liblz4-tool \
             device-tree-compiler
 
@@ -43,21 +45,33 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
 
-          # Force unconditional inclusion in drivers/net/wireless/Makefile
+          # 1. Force unconditional link in wireless Makefile
           echo 'obj-y += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # Force enable RTL8821AU (TP-Link T2U Plus 2357:0120) and disable power saving inside internal Makefile
-          sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
-          sed -i 's/CONFIG_RTL8812AU = n/CONFIG_RTL8812AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
-          sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl88XXau/Makefile
-          sed -i 's/CONFIG_WIFI_MONITOR = n/CONFIG_WIFI_MONITOR = y/g' drivers/net/wireless/rtl88XXau/Makefile
+          # 2. OVERWRITE driver Makefile to force build all subdirectories statically
+          cat << 'EOF' > drivers/net/wireless/rtl88XXau/Makefile
+          obj-y += core/
+          obj-y += hal/
+          obj-y += hal/phydm/
+          obj-y += hal/rtl8812a/
+          obj-y += hal/rtl8821a/
+          obj-y += hal/btc/
+          obj-y += os_dep/
+          obj-y += os_dep/linux/
 
-          # Clean compiler flag warnings & errors for GCC 4.9
+          ccflags-y += -I$(src)/include
+          ccflags-y += -I$(src)/hal/phydm
+          ccflags-y += -DRTW_USE_CFG80211_STA_EVENT
+          ccflags-y += -DCONFIG_FORCE_RTL8821A
+          ccflags-y += -DCONFIG_RTL8821A
+          EOF
+
+          # 3. Clean compiler warnings & error flags for GCC 4.9
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror=[a-zA-Z0-9_-]*//g' {} +
 
-          # Patch cfg80211 API compatibility for Linux 4.9 kernel
+          # 4. Patch cfg80211 API compatibility for Linux 4.9 kernel
           python3 -c '
           path = "drivers/net/wireless/rtl88XXau/os_dep/linux/ioctl_cfg80211.c"
           with open(path, "r") as f:
@@ -89,7 +103,10 @@ jobs:
           scripts/config --enable CONFIG_USB_USBNET
           scripts/config --enable CONFIG_NET_RADIO
 
-          # Set local kernel version string (-devutty+)
+          # Force driver symbol explicitly into generated .config
+          scripts/config --enable CONFIG_8812AU
+
+          # Set local kernel version string (-devutty)
           scripts/config --set-str CONFIG_LOCALVERSION "-devutty"
 
           # Enable /proc/config.gz
@@ -114,7 +131,7 @@ jobs:
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
 
-      - name: Compile Kernel Image (Bypass DTB Build)
+      - name: Compile Kernel Image
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
@@ -122,32 +139,49 @@ jobs:
 
           make -j$(nproc) Image.gz
 
-      - name: Package into AnyKernel3 Flashable ZIP
+      - name: Pack Kernel into Odin Flashable boot.tar
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          cp arch/arm64/boot/Image.gz AnyKernel3/
+          # 1. Setup magiskboot
+          wget https://github.com/topjohnshen/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O magisk.zip
+          unzip magisk.zip lib/x86_64/libmagiskboot.so -d .
+          mv lib/x86_64/libmagiskboot.so ./magiskboot
+          chmod +x magiskboot
 
-          cd AnyKernel3
-          sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel with RTL88XXAU/g' anykernel.sh
-          sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
-          
-          # Fix Qualcomm SDM429 boot block path
-          python3 -c '
-          with open("anykernel.sh", "r") as f:
-              content = f.read()
-          content = content.replace("block=auto;", "block=/dev/block/bootdevice/by-name/boot;")
-          content = content.replace("block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;", "block=/dev/block/bootdevice/by-name/boot;")
-          with open("anykernel.sh", "w") as f:
-              f.write(content)
-          '
+          # 2. Get stock boot.img (either from repo or download from release)
+          if [ ! -f "boot.img" ]; then
+            echo "boot.img not found in repo root, attempting download from release tag stock-boot..."
+            wget https://github.com/${{ github.repository }}/releases/download/stock-boot/boot.img -O boot.img || true
+          fi
 
-          sed -i 's/is_slot_device=.*/is_slot_device=0;/g' anykernel.sh
+          if [ ! -f "boot.img" ]; then
+            echo "ERROR: Could not find boot.img in repo root or GitHub releases!"
+            exit 1
+          fi
 
-          zip -r9 ../NetHunter-Kernel-RTL88XXAU.zip * -x .git README.md *placeholder
+          # 3. Unpack stock boot.img
+          ./magiskboot unpack boot.img
 
-      - name: Upload Flashable Kernel ZIP
-        uses: actions/upload-artifact@v4
+          # 4. Replace kernel binary
+          cp arch/arm64/boot/Image.gz kernel
+
+          # 5. Repack modified boot image
+          ./magiskboot repack boot.img custom_boot.img
+
+          # 6. Format as boot.img and compress to Odin .tar
+          cp custom_boot.img boot.img
+          tar -cvf boot.tar boot.img
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: NetHunter-Kernel-Flashable-ZIP
-          path: NetHunter-Kernel-RTL88XXAU.zip
+          tag_name: "v1.0-${{ github.run_number }}"
+          name: "Kernel Build #${{ github.run_number }}"
+          body: |
+            Custom Kernel Build for Samsung Galaxy Tab A 8.0 2019 (`gtowifi`).
+            - Kernel Version: `4.9.337-devutty+`
+            - Included Driver: Realtek RTL88XXAU (TP-Link Archer T2U PLUS)
+            - Flash via **Odin (AP slot)** in Download Mode.
+          files: boot.tar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
