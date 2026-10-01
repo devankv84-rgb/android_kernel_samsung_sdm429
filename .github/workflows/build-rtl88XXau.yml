@@ -43,15 +43,17 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
 
-          # Standard linkage into wireless Kconfig & Makefile
-          echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
-          echo 'obj-$(CONFIG_8812AU) += rtl88XXau/' >> drivers/net/wireless/Makefile
+          # Link driver into wireless Makefile directly
+          echo 'obj-y += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # Force driver options inside its Makefile
+          # Force RTL8821AU build target for TP-Link Archer T2U Plus (2357:0120)
           sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
-          sed -i 's/CONFIG_RTL8812AU = n/CONFIG_RTL8812AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
+          sed -i 's/CONFIG_RTL8812AU = y/CONFIG_RTL8812AU = n/g' drivers/net/wireless/rtl88XXau/Makefile
           sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl88XXau/Makefile
           sed -i 's/CONFIG_WIFI_MONITOR = n/CONFIG_WIFI_MONITOR = y/g' drivers/net/wireless/rtl88XXau/Makefile
+
+          # Inject preprocessor flags forcing RTL8821A chip definitions
+          echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A -DCONFIG_FORCE_RTL8821A" >> drivers/net/wireless/rtl88XXau/Makefile
 
           # Clean compiler flag warnings for GCC 4.9
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
@@ -87,9 +89,6 @@ jobs:
           scripts/config --enable CONFIG_USB_NET_DRIVERS
           scripts/config --enable CONFIG_USB_USBNET
           scripts/config --enable CONFIG_NET_RADIO
-
-          # Force driver build symbol in .config
-          scripts/config --enable CONFIG_8812AU
 
           # Set local kernel version string (-devutty+)
           scripts/config --set-str CONFIG_LOCALVERSION "-devutty"
