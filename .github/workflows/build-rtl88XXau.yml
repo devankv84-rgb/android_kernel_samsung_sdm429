@@ -43,26 +43,15 @@ jobs:
         run: |
           git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
 
-          # Force unconditional inclusion in parent wireless Makefile
-          echo 'obj-y += rtl88XXau/' >> drivers/net/wireless/Makefile
+          # Standard linkage into wireless Kconfig & Makefile
+          echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
+          echo 'obj-$(CONFIG_8812AU) += rtl88XXau/' >> drivers/net/wireless/Makefile
 
-          # Overwrite internal driver Makefile to force compile all subdirs statically
-          cat << 'EOF' > drivers/net/wireless/rtl88XXau/Makefile
-          obj-y += core/
-          obj-y += hal/
-          obj-y += hal/phydm/
-          obj-y += hal/rtl8812a/
-          obj-y += hal/rtl8821a/
-          obj-y += hal/btc/
-          obj-y += os_dep/
-          obj-y += os_dep/linux/
-
-          ccflags-y += -I$(src)/include
-          ccflags-y += -I$(src)/hal/phydm
-          ccflags-y += -DRTW_USE_CFG80211_STA_EVENT
-          ccflags-y += -DCONFIG_FORCE_RTL8821A
-          ccflags-y += -DCONFIG_RTL8821A
-          EOF
+          # Force driver options inside its Makefile
+          sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
+          sed -i 's/CONFIG_RTL8812AU = n/CONFIG_RTL8812AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
+          sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl88XXau/Makefile
+          sed -i 's/CONFIG_WIFI_MONITOR = n/CONFIG_WIFI_MONITOR = y/g' drivers/net/wireless/rtl88XXau/Makefile
 
           # Clean compiler flag warnings for GCC 4.9
           find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
@@ -90,7 +79,7 @@ jobs:
           make clean && make mrproper
           make lineageos_gtowifi_defconfig
 
-          # Enable core wireless & USB networking drivers
+          # Enable wireless subsystem & USB network core
           scripts/config --enable CONFIG_NETDEVICES
           scripts/config --enable CONFIG_WLAN
           scripts/config --enable CONFIG_CFG80211
@@ -98,6 +87,9 @@ jobs:
           scripts/config --enable CONFIG_USB_NET_DRIVERS
           scripts/config --enable CONFIG_USB_USBNET
           scripts/config --enable CONFIG_NET_RADIO
+
+          # Force driver build symbol in .config
+          scripts/config --enable CONFIG_8812AU
 
           # Set local kernel version string (-devutty+)
           scripts/config --set-str CONFIG_LOCALVERSION "-devutty"
