@@ -35,9 +35,25 @@ jobs:
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain64
           echo "$(pwd)/toolchain64/bin" >> $GITHUB_PATH
 
-      - name: Patch Compiler Check in Kernel Source
+      - name: Patch Compiler Check & Driver Warnings
         run: |
+          # Disable GCC version requirement check
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
+
+          # Patch struct completion format specifier in Prima WLAN driver
+          if [ -f "drivers/staging/prima/CORE/WDA/src/wlan_qct_wda.c" ]; then
+            sed -i 's/"ADD BA : Not in connected state.Add delay : %d",pWDA->addBa_responce_delay/"ADD BA : Not in connected state."/g' drivers/staging/prima/CORE/WDA/src/wlan_qct_wda.c
+          fi
+
+          # Clean Clang-specific flags from Prima WLAN driver Makefile
+          if [ -d "drivers/staging/prima" ]; then
+            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-non-literal-null-conversion//g' {} +
+            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-typedef-redefinition//g' {} +
+            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-parentheses-equality//g' {} +
+            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-pointer-bool-conversion//g' {} +
+            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-enum-conversion//g' {} +
+            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
+          fi
 
       - name: Embed RTL88XXAU Driver into Kernel Tree
         run: |
@@ -55,13 +71,12 @@ jobs:
           # Inject flags forcing RTL8821A chip definitions
           echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A -DCONFIG_FORCE_RTL8821A -DRTW_USE_CFG80211_STA_EVENT" >> drivers/net/wireless/rtl88XXau/Makefile
 
-          # Patch os_intfs.c to force module_init execution when compiled statically (obj-y)
+          # Patch os_intfs.c to force module_init execution when compiled statically
           python3 -c '
           path = "drivers/net/wireless/rtl88XXau/os_dep/linux/os_intfs.c"
           with open(path, "r") as f:
               code = f.read()
 
-          # Force module_init initialization code to execute during boot
           code = code.replace("#ifdef MODULE", "#if 1")
           code = code.replace("#ifndef MODULE", "#if 0")
 
@@ -107,7 +122,14 @@ jobs:
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
           make clean && make mrproper
-          make lineageos_gtowifi_defconfig
+          
+          # Load defconfig (Use lineageos_gtowifi_defconfig or gtowifi_eur_open_defconfig depending on tree)
+          if make lineageos_gtowifi_defconfig 2>/dev/null; then
+            echo "Loaded lineageos_gtowifi_defconfig"
+          else
+            make gtowifi_eur_open_defconfig
+            echo "Loaded gtowifi_eur_open_defconfig"
+          fi
 
           # Enable wireless subsystem & USB network core
           scripts/config --enable CONFIG_NETDEVICES
@@ -118,7 +140,7 @@ jobs:
           scripts/config --enable CONFIG_USB_USBNET
           scripts/config --enable CONFIG_NET_RADIO
 
-          # Set local kernel version string (-devutty)
+          # Set local kernel version string
           scripts/config --set-str CONFIG_LOCALVERSION "-devutty"
 
           # Enable /proc/config.gz
@@ -143,27 +165,27 @@ jobs:
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
 
-      - name: Compile Kernel Image & DTBs
+      - name: Compile Kernel Image & Device Trees
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # Compile Image.gz and Device Tree Blobs
+          # Step 1: Compile Image.gz and DTB files
           make -j$(nproc) Image.gz dtbs
 
-          # Attempt native Image.gz-dtb generation
+          # Step 2: Attempt native Image.gz-dtb target
           make -j$(nproc) Image.gz-dtb || true
 
-          # If Image.gz-dtb target was skipped or unsupported by Makefile, concatenate DTBs manually
+          # Step 3: Concatenate DTBs if Image.gz-dtb was not natively produced
           if [ ! -f "arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "Concatenating DTBs manually to Image.gz..."
+            echo "Concatenating compiled DTBs to Image.gz..."
             DTB_FILES=$(find arch/arm64/boot/dts/qcom/ -name "*.dtb" 2>/dev/null)
             if [ -n "$DTB_FILES" ]; then
               cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
               echo "Successfully generated arch/arm64/boot/Image.gz-dtb"
             else
-              echo "ERROR: No DTB files were compiled!"
+              echo "ERROR: No DTB files were found!"
               exit 1
             fi
           fi
@@ -177,7 +199,7 @@ jobs:
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel with RTL88XXAU/g' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
           
-          # Fix Qualcomm SDM429 boot block path
+          # Set Qualcomm SDM429 boot partition path
           python3 -c '
           with open("anykernel.sh", "r") as f:
               content = f.read()
