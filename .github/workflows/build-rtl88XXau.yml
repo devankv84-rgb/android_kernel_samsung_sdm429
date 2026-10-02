@@ -26,12 +26,12 @@ jobs:
         run: |
           git clone https://github.com/aircrack-ng/rtl8812au.git drivers/net/wireless/rtl88XXau
           
-          # Add driver to Kconfig if not present
+          # Add driver to Kconfig if missing
           if ! grep -q "rtl88XXau" drivers/net/wireless/Kconfig; then
             echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
           fi
           
-          # Add driver to Makefile if not present
+          # Add driver to Makefile if missing
           if ! grep -q "rtl88XXau" drivers/net/wireless/Makefile; then
             echo 'obj-$(CONFIG_RTL88XXAU) += rtl88XXau/' >> drivers/net/wireless/Makefile
           fi
@@ -41,10 +41,10 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
           
-          # Load default Qualcomm SDM429 defconfig
+          # Load Qualcomm SDM429 defconfig
           make msm8937-perf_defconfig
 
-          # Inject RTL88XXAU and USB Networking flags
+          # Enable RTL88XXAU & USB Networking drivers
           echo "CONFIG_RTL88XXAU=y" >> .config
           echo "CONFIG_RTL8821AU=y" >> .config
           echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A" >> .config
@@ -55,7 +55,7 @@ jobs:
 
           make olddefconfig
 
-      - name: Compile Kernel Image & Device Tree Targets
+      - name: Compile Kernel & Target DTB/DTBOs
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
@@ -64,15 +64,22 @@ jobs:
           # 1. Compile Kernel Image
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
 
-          # 2. Build Base DTBs & Overlays specifically defined in qcom Makefile
-          echo "=== Compiling DTBs and DTBOs in qcom tree ==="
+          # 2. Build explicit overlay targets defined in your Makefile
+          echo "=== Compiling SDM429 DTBO and Base DTBs ==="
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429-mtp-P81081-overlay.dtbo || true
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429.dtb || true
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sda429.dtb || true
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs dtbo || true
 
-          # 3. Locate compiled .dtb files
-          DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
+          # 3. Search for generated .dtb files
+          DTB_FILES=$(find arch/arm64/boot/dts/qcom/ -name "sdm429*.dtb" -o -name "sda429*.dtb" 2>/dev/null)
 
-          # 4. Fallback: Directly build sdm429.dtb with GCC preprocessor if Kbuild skipped
+          # Fallback: search all dtb files in dts tree if specific names aren't matched
+          if [ -z "$DTB_FILES" ]; then
+            DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
+          fi
+
+          # 4. Fallback manual preprocessing with GCC if Kbuild skipped
           if [ -z "$DTB_FILES" ]; then
             echo "Pre-processing and compiling sdm429.dts manually..."
             if [ -f "arch/arm64/boot/dts/qcom/sdm429.dts" ]; then
@@ -87,11 +94,11 @@ jobs:
 
           # 5. Append DTB to Image.gz
           if [ -n "$DTB_FILES" ]; then
-            echo "Successfully generated DTB file(s):"
+            echo "Found matching DTB file(s):"
             echo "$DTB_FILES"
             
             cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
-            echo "Successfully generated arch/arm64/boot/Image.gz-dtb!"
+            echo "Successfully created arch/arm64/boot/Image.gz-dtb!"
           else
             echo "CRITICAL ERROR: No .dtb file was built!"
             exit 1
@@ -101,7 +108,7 @@ jobs:
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           
-          # Move compiled kernel image to AnyKernel directory
+          # Move compiled Image.gz-dtb to AnyKernel directory
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
 
           cd AnyKernel3
@@ -112,7 +119,7 @@ jobs:
           sed -i 's/block=.*/block=auto/' anykernel.sh
           sed -i 's/is_slot_device=.*/is_slot_device=0/' anykernel.sh
 
-          # Create flashable zip
+          # Zip package
           zip -r9 ../Custom_Kernel_RTL88XXAU.zip * -x .git README.md *placeholder
 
       - name: Upload Flashable ZIP Artifact
