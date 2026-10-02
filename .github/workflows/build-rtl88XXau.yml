@@ -176,7 +176,7 @@ jobs:
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
 
-      - name: Compile Kernel Image & Device Trees (Explicit Solution 2 Target)
+      - name: Compile Kernel Image & Dynamic DTB Discovery
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
@@ -185,31 +185,42 @@ jobs:
           # 1. Compile Kernel Image
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
 
-          # 2. Force building explicit Qualcomm DTB targets sequentially until one hits
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" qcom/msm8937.dtb || \
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" qcom/sdm429.dtb || \
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" qcom/msm8952.dtb || \
+          # 2. Log all DTS files present in the repo for debugging
+          echo "=== Locating DTS files in repo ==="
+          find arch/arm64/boot/dts/ -name "*.dts"
+
+          # 3. Trigger build targets for dtbs
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs || true
 
-          # 3. Search for any generated DTB files
-          echo "=== Locating compiled DTB files ==="
+          # 4. Fallback: Directly compile any found .dts files using dtc if make dtbs didn't build them
           DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
 
           if [ -z "$DTB_FILES" ]; then
-            echo "Searching entire build tree for DTBs..."
-            DTB_FILES=$(find . -name "*.dtb" ! -path "./scripts/*" ! -path "./toolchain64/*" 2>/dev/null)
+            echo "Standard make dtbs returned no output. Compiling DTS files manually via DTC..."
+            DTS_FILES=$(find arch/arm64/boot/dts/ -name "*.dts" ! -name "*include*")
+            for dts in $DTS_FILES; do
+              dtb="${dts%.dts}.dtb"
+              dtc -I dts -O dtb -i arch/arm64/boot/dts/ -i arch/arm64/boot/dts/qcom/ -i arch/arm64/boot/dts/samsung/ "$dts" -o "$dtb" || true
+            done
+            DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
           fi
 
-          # 4. Concatenate found DTB files to Image.gz
+          # 5. Concatenate found DTB files to Image.gz
           if [ -n "$DTB_FILES" ]; then
-            echo "Found the following DTB file(s):"
+            echo "Successfully generated DTB file(s):"
             echo "$DTB_FILES"
             
             cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
             echo "Successfully generated arch/arm64/boot/Image.gz-dtb!"
           else
-            echo "CRITICAL ERROR: No .dtb files were built! The compilation targets failed to build a DTB."
-            exit 1
+            echo "CRITICAL ERROR: No .dtb files were produced. Checking if stock.dtb exists in repo..."
+            if [ -f "stock.dtb" ]; then
+              cat arch/arm64/boot/Image.gz stock.dtb > arch/arm64/boot/Image.gz-dtb
+              echo "Used stock.dtb fallback from repo root!"
+            else
+              echo "Failed to generate DTB and no stock.dtb found in repo root!"
+              exit 1
+            fi
           fi
 
       - name: Package into AnyKernel3 Flashable ZIP
