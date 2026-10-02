@@ -176,34 +176,39 @@ jobs:
           scripts/config --disable CONFIG_VDSO32
           scripts/config --disable CONFIG_COMPAT_VDSO
 
-      - name: Compile Kernel Image & Device Trees
+      - name: Compile Kernel Image & Device Trees (Explicit Solution 2 Target)
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # 1. Compile Kernel Image & force DTB targets for MSM8952/Qualcomm family
+          # 1. Compile Kernel Image
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs || make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/ || true
 
-          # 2. Search for compiled DTB files across all output paths
-          echo "=== Locating compiled .dtb files ==="
+          # 2. Force building explicit Qualcomm DTB targets sequentially until one hits
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" qcom/msm8937.dtb || \
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" qcom/sdm429.dtb || \
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" qcom/msm8952.dtb || \
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs || true
+
+          # 3. Search for any generated DTB files
+          echo "=== Locating compiled DTB files ==="
           DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
 
           if [ -z "$DTB_FILES" ]; then
-            echo "Searching entire build output for DTBs..."
+            echo "Searching entire build tree for DTBs..."
             DTB_FILES=$(find . -name "*.dtb" ! -path "./scripts/*" ! -path "./toolchain64/*" 2>/dev/null)
           fi
 
-          # 3. Concatenate DTBs to Image.gz
+          # 4. Concatenate found DTB files to Image.gz
           if [ -n "$DTB_FILES" ]; then
-            echo "Found the following DTB files:"
+            echo "Found the following DTB file(s):"
             echo "$DTB_FILES"
             
             cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
-            echo "Successfully generated Image.gz-dtb with appended DTB(s)!"
+            echo "Successfully generated arch/arm64/boot/Image.gz-dtb!"
           else
-            echo "ERROR: Critical failure! No .dtb files were produced during compilation."
+            echo "CRITICAL ERROR: No .dtb files were built! The compilation targets failed to build a DTB."
             exit 1
           fi
 
@@ -240,4 +245,3 @@ jobs:
         with:
           name: NetHunter-Kernel-Flashable-ZIP
           path: NetHunter-Kernel-RTL88XXAU.zip
-          
