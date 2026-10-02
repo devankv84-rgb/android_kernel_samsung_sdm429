@@ -182,17 +182,27 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # Force system DTC compiler and reset DTC_FLAGS
+          # Force system DTC compiler and build kernel + dtbs
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz dtbs
 
-          # Concatenate DTBs into Image.gz-dtb
-          echo "Concatenating compiled DTBs to Image.gz..."
-          DTB_FILES=$(find arch/arm64/boot/dts/qcom/ -name "*.dtb" 2>/dev/null)
+          # Locate all generated .dtb files across the build output paths
+          echo "Searching for compiled DTB files..."
+          DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
+
+          if [ -z "$DTB_FILES" ]; then
+            echo "No DTBs in arch/arm64/boot/dts/, searching full source tree..."
+            DTB_FILES=$(find . -name "*.dtb" ! -path "./scripts/*" ! -path "./toolchain64/*" 2>/dev/null)
+          fi
+
+          # Concatenate DTBs to Image.gz to produce Image.gz-dtb
           if [ -n "$DTB_FILES" ]; then
+            echo "Found DTB files:"
+            echo "$DTB_FILES"
+            
             cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
-            echo "Successfully generated arch/arm64/boot/Image.gz-dtb"
+            echo "Successfully generated arch/arm64/boot/Image.gz-dtb with appended DTBs!"
           else
-            echo "ERROR: No DTB files were found!"
+            echo "ERROR: Critical failure! No .dtb files were generated during the build."
             exit 1
           fi
 
