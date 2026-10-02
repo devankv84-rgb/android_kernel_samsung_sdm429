@@ -40,7 +40,7 @@ jobs:
           # Disable GCC version requirement check
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
-          # Clean DTC flags cleanly in scripts/Makefile.lib without altering targets
+          # Safely strip invalid DTC flags without breaking Makefile target structure
           if [ -f "scripts/Makefile.lib" ]; then
             echo "Patching scripts/Makefile.lib for DTC..."
             sed -i 's/DTC_FLAGS += -@//g' scripts/Makefile.lib || true
@@ -49,11 +49,11 @@ jobs:
             sed -i 's/-Werror//g' scripts/Makefile.lib || true
           fi
 
-          # Clean DTC flags in all dts Makefiles
+          # Clean DTC flags across all DTS Makefiles
           find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-@//g' {} + || true
           find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} + || true
 
-          # Patch Prima WLAN driver to prevent compilation errors
+          # Patch Prima WLAN driver build flags and compilation issues
           if [ -d "drivers/staging/prima" ]; then
             echo "Patching drivers/staging/prima build flags..."
             find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
@@ -182,45 +182,45 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # Force system DTC compiler and reset DTC_FLAGS safely via environment
+          # Force system DTC compiler and reset DTC_FLAGS
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz dtbs
 
-          # Attempt native Image.gz-dtb target
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz-dtb || true
-
-          # Concatenate DTBs if Image.gz-dtb was not natively produced
-          if [ ! -f "arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "Concatenating compiled DTBs to Image.gz..."
-            DTB_FILES=$(find arch/arm64/boot/dts/qcom/ -name "*.dtb" 2>/dev/null)
-            if [ -n "$DTB_FILES" ]; then
-              cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
-              echo "Successfully generated arch/arm64/boot/Image.gz-dtb"
-            else
-              echo "ERROR: No DTB files were found!"
-              exit 1
-            fi
+          # Concatenate DTBs into Image.gz-dtb
+          echo "Concatenating compiled DTBs to Image.gz..."
+          DTB_FILES=$(find arch/arm64/boot/dts/qcom/ -name "*.dtb" 2>/dev/null)
+          if [ -n "$DTB_FILES" ]; then
+            cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
+            echo "Successfully generated arch/arm64/boot/Image.gz-dtb"
+          else
+            echo "ERROR: No DTB files were found!"
+            exit 1
           fi
 
       - name: Package into AnyKernel3 Flashable ZIP
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          
+          # Copy concatenated kernel + DTB binary
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
 
           cd AnyKernel3
+          
+          # Update strings & device settings
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel with RTL88XXAU/g' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
           
-          # Set Qualcomm SDM429 boot partition path
+          # Configure Samsung SDM429 boot path, split_boot, and vbmeta patch
           python3 -c '
           with open("anykernel.sh", "r") as f:
               content = f.read()
+
           content = content.replace("block=auto;", "block=/dev/block/bootdevice/by-name/boot;")
-          content = content.replace("block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;", "block=/dev/block/bootdevice/by-name/boot;")
+          content = content.replace("is_slot_device=0;", "is_slot_device=0;\nsplit_boot=1;")
+          content = content.replace("PATCH_VBMETA_FLAG=auto;", "PATCH_VBMETA_FLAG=1;")
+
           with open("anykernel.sh", "w") as f:
               f.write(content)
           '
-
-          sed -i 's/is_slot_device=.*/is_slot_device=0;/g' anykernel.sh
 
           zip -r9 ../NetHunter-Kernel-RTL88XXAU.zip * -x .git README.md *placeholder
 
