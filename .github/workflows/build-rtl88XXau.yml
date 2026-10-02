@@ -40,19 +40,27 @@ jobs:
           # Disable GCC version requirement check
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
-          # 1. Fix Device Tree Compiler (DTC) invalid option '--@' and warning errors
+          # Compile/Build DTC or force overwrite in-tree DTC with system DTC binary
+          make -j$(nproc) scripts/dtc/ || true
+          if command -v dtc >/dev/null 2>&1; then
+            mkdir -p scripts/dtc/
+            cp $(which dtc) scripts/dtc/dtc || true
+          fi
+
+          # Strip strict warning flags and invalid DTC options across all DTS Makefiles
+          find arch/arm64/boot/dts/ -name "Makefile*" -exec sed -i 's/-Werror//g' {} + || true
+          find arch/arm64/boot/dts/ -name "Makefile*" -exec sed -i 's/-@//g' {} + || true
+
+          # Patch scripts/Makefile.lib to prevent DTC warnings from halting the build
           if [ -f "scripts/Makefile.lib" ]; then
             echo "Patching scripts/Makefile.lib for DTC..."
-            # Remove -@ flag if present in DTC_FLAGS
-            sed -i 's/-@//g' scripts/Makefile.lib || true
             sed -i 's/DTC_FLAGS += -Werror/DTC_FLAGS += -Wno-error/g' scripts/Makefile.lib || true
+            sed -i 's/-Werror//g' scripts/Makefile.lib || true
+            sed -i 's/-@//g' scripts/Makefile.lib || true
             sed -i 's/DTC_FLAGS :=/DTC_FLAGS := -Wno-unit_address_vs_reg -Wno-graph_child_address -Wno-interrupt_provider/g' scripts/Makefile.lib || true
           fi
 
-          # Force Makefile to use system dtc if in-tree dtc lacks overlay support
-          find arch/arm64/boot/dts/ -name "Makefile*" -exec sed -i 's/DTC_FLAGS += -@//g' {} + || true
-
-          # 2. Patch Prima WLAN driver to prevent compilation errors
+          # Patch Prima WLAN driver to prevent compilation errors
           if [ -d "drivers/staging/prima" ]; then
             echo "Patching drivers/staging/prima build flags..."
             find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
