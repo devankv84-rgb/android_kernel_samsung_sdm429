@@ -1,182 +1,61 @@
-name: Build Kernel & AnyKernel3 Flashable Package
+name: Build Kernel with RTL88XXAU
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ "*" ]
 
 jobs:
-  build-kernel:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout Kernel Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libncurses5-dev \
-            git \
-            python3 \
-            zip \
-            unzip \
-            liblz4-tool \
-            device-tree-compiler
+          sudo apt-get install -y build-essential bc libncurses5-dev libssl-dev \
+            bison flex libelf-dev git ccache device-tree-compiler gcc-aarch64-linux-gnu
 
-      - name: Setup GCC 4.9 Toolchain
+      - name: Clone Toolchain
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain64
-          echo "$(pwd)/toolchain64/bin" >> $GITHUB_PATH
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git -b lineage-19.1 gcc64
+          echo "$GITHUB_WORKSPACE/gcc64/bin" >> $GITHUB_PATH
 
-      - name: Patch Compiler Checks, Prima WLAN & DTC Rules
+      - name: Inject RTL88XXAU Driver
         run: |
-          # Disable GCC version requirement check
-          sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
-
-          # Safely strip invalid DTC flags without breaking Makefile target structure
-          if [ -f "scripts/Makefile.lib" ]; then
-            echo "Patching scripts/Makefile.lib for DTC..."
-            sed -i 's/DTC_FLAGS += -@//g' scripts/Makefile.lib || true
-            sed -i 's/DTC_FLAGS += -Werror//g' scripts/Makefile.lib || true
-            sed -i 's/-@//g' scripts/Makefile.lib || true
-            sed -i 's/-Werror//g' scripts/Makefile.lib || true
+          git clone https://github.com/aircrack-ng/rtl8812au.git drivers/net/wireless/rtl88XXau
+          
+          # Add driver to Kconfig if not present
+          if ! grep -q "rtl88XXau" drivers/net/wireless/Kconfig; then
+            echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
+          fi
+          
+          # Add driver to Makefile if not present
+          if ! grep -q "rtl88XXau" drivers/net/wireless/Makefile; then
+            echo 'obj-$(CONFIG_RTL88XXAU) += rtl88XXau/' >> drivers/net/wireless/Makefile
           fi
 
-          # Clean DTC flags across all DTS Makefiles
-          find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-@//g' {} + || true
-          find arch/arm64/boot/dts/ -type f \( -name "Makefile*" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} + || true
-
-          # Patch Prima WLAN driver build flags and compilation issues
-          if [ -d "drivers/staging/prima" ]; then
-            echo "Patching drivers/staging/prima build flags..."
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sh -c 'echo "ccflags-y += -w -Wno-error -Wno-enum-compare -Wno-pointer-sign" >> "$1"' _ {} \;
-
-            find drivers/staging/prima -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
-
-            if [ -f "drivers/staging/prima/CORE/WDA/src/wlan_qct_wda.c" ]; then
-              sed -i 's/"ADD BA : Not in connected state.Add delay : %d",pWDA->addBa_responce_delay/"ADD BA : Not in connected state."/g' drivers/staging/prima/CORE/WDA/src/wlan_qct_wda.c
-            fi
-          fi
-
-      - name: Embed RTL88XXAU Driver into Kernel Tree
-        run: |
-          git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/rtl88XXau
-
-          # Link driver statically into wireless Makefile
-          echo 'obj-y += rtl88XXau/' >> drivers/net/wireless/Makefile
-
-          # Force RTL8821AU mode inside driver Makefile for TP-Link T2U Plus (2357:0120)
-          sed -i 's/CONFIG_RTL8821AU = n/CONFIG_RTL8821AU = y/g' drivers/net/wireless/rtl88XXau/Makefile
-          sed -i 's/CONFIG_RTL8812AU = y/CONFIG_RTL8812AU = n/g' drivers/net/wireless/rtl88XXau/Makefile
-          sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl88XXau/Makefile
-          sed -i 's/CONFIG_WIFI_MONITOR = n/CONFIG_WIFI_MONITOR = y/g' drivers/net/wireless/rtl88XXau/Makefile
-
-          # Inject flags forcing RTL8821A chip definitions
-          echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A -DCONFIG_FORCE_RTL8821A -DRTW_USE_CFG80211_STA_EVENT" >> drivers/net/wireless/rtl88XXau/Makefile
-
-          # Patch os_intfs.c to force module_init execution when compiled statically
-          python3 -c '
-          path = "drivers/net/wireless/rtl88XXau/os_dep/linux/os_intfs.c"
-          with open(path, "r") as f:
-              code = f.read()
-
-          code = code.replace("#ifdef MODULE", "#if 1")
-          code = code.replace("#ifndef MODULE", "#if 0")
-
-          with open(path, "w") as f:
-              f.write(code)
-          print("Patched os_intfs.c for static kernel initialization")
-          '
-
-          # Patch usb_intf.c to force CONFIG_RTL8821AU definition at header level
-          python3 -c '
-          path = "drivers/net/wireless/rtl88XXau/os_dep/linux/usb_intf.c"
-          with open(path, "r") as f:
-              code = f.read()
-
-          code = "#define CONFIG_RTL8821AU\n#define CONFIG_RTL8821A\n" + code
-
-          with open(path, "w") as f:
-              f.write(code)
-          print("Patched usb_intf.c for 2357:0120 USB ID binding")
-          '
-
-          # Clean compiler flag warnings for GCC 4.9
-          find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i -E 's/-Wno-[a-zA-Z0-9_-]+//g' {} +
-          find drivers/net/wireless/rtl88XXau -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} +
-
-          # Patch cfg80211 API compatibility for Linux 4.9 kernel
-          python3 -c '
-          path = "drivers/net/wireless/rtl88XXau/os_dep/linux/ioctl_cfg80211.c"
-          with open(path, "r") as f:
-              code = f.read()
-
-          code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
-          code = code.replace("LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)", "LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)")
-
-          with open(path, "w") as f:
-              f.write(code)
-          '
-
-      - name: Configure Kernel Build
+      - name: Configure Kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=aarch64-linux-android-
+          
+          # Load default Qualcomm SDM429 defconfig
+          make msm8937-perf_defconfig
 
-          make clean && make mrproper
+          # Inject RTL88XXAU and USB Networking flags
+          echo "CONFIG_RTL88XXAU=y" >> .config
+          echo "CONFIG_RTL8821AU=y" >> .config
+          echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A" >> .config
+          echo "CONFIG_USB_NET_DRIVERS=y" >> .config
+          echo "CONFIG_USB_USBNET=y" >> .config
+          echo "CONFIG_CFG80211=y" >> .config
+          echo "CONFIG_CFG80211_WEXT=y" >> .config
 
-          # Load defconfig
-          if make lineageos_gtowifi_defconfig 2>/dev/null; then
-            echo "Loaded lineageos_gtowifi_defconfig"
-          else
-            make gtowifi_eur_open_defconfig
-            echo "Loaded gtowifi_eur_open_defconfig"
-          fi
+          make olddefconfig
 
-          # Enable wireless subsystem & USB network core
-          scripts/config --enable CONFIG_NETDEVICES
-          scripts/config --enable CONFIG_WLAN
-          scripts/config --enable CONFIG_CFG80211
-          scripts/config --enable CONFIG_CFG80211_WEXT
-          scripts/config --enable CONFIG_USB_NET_DRIVERS
-          scripts/config --enable CONFIG_USB_USBNET
-          scripts/config --enable CONFIG_NET_RADIO
-
-          # Set local kernel version string
-          scripts/config --set-str CONFIG_LOCALVERSION "-devutty"
-
-          # Enable /proc/config.gz
-          scripts/config --enable CONFIG_IKCONFIG
-          scripts/config --enable CONFIG_IKCONFIG_PROC
-
-          # Fix missing header include paths globally
-          echo "ccflags-y += -Idrivers/bluetooth" >> drivers/bluetooth/Makefile
-          echo "ccflags-y += -Idrivers/gpu/msm" >> drivers/gpu/msm/Makefile
-          find drivers/media/platform/msm/camera_v2 -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/media/platform/msm/camera_v2 -Idrivers/media/platform/msm/camera_v2/common -Idrivers/media/platform/msm/camera_v2/isp -Idrivers/media/platform/msm/camera_v2/sensor -Idrivers/media/platform/msm/camera_v2/sensor/io -Idrivers/media/platform/msm/camera_v2/sensor/cci -Idrivers/media/platform/msm/camera_v2/pproc/vpe -Idrivers/media/platform/msm/camera_v2/module" >> "$1"' _ {} \;
-          find drivers/platform/msm/ipa -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/platform/msm/ipa/ipa_clients -Idrivers/platform/msm/ipa/ipa_v2 -Idrivers/platform/msm/ipa/ipa_v3 -Idrivers/platform/msm/ipa" >> "$1"' _ {} \;
-          find drivers/usb/gadget -name "Makefile" -exec sh -c 'echo "ccflags-y += -Idrivers/usb/gadget -Idrivers/usb/gadget/function -Idrivers/usb/gadget/udc" >> "$1"' _ {} \;
-
-          # Fix __builtin_add_overflow & suppress warnings in techpack/audio for GCC 4.9
-          if [ -d "techpack/audio" ]; then
-            find techpack/audio -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
-            find techpack/audio -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sh -c 'echo "ccflags-y += -w -Wno-error" >> "$1"' _ {} \;
-            find techpack/audio -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/__builtin_add_overflow(\([^,]*\),\s*\([^,]*\),\s*\([^)]*\))/(*(\3) = (\1) + (\2), 0)/g' {} +
-          fi
-
-          # Disable vDSO 32-bit targets
-          scripts/config --disable CONFIG_VDSO32
-          scripts/config --disable CONFIG_COMPAT_VDSO
-
-      - name: Compile Kernel Image & Dynamic DTB Discovery
+      - name: Compile Kernel Image & Device Tree Targets
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
@@ -185,27 +64,28 @@ jobs:
           # 1. Compile Kernel Image
           make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
 
-          # 2. Log all DTS files present in the repo for debugging
-          echo "=== Locating DTS files in repo ==="
-          find arch/arm64/boot/dts/ -name "*.dts"
+          # 2. Build Base DTBs & Overlays specifically defined in qcom Makefile
+          echo "=== Compiling DTBs and DTBOs in qcom tree ==="
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429.dtb || true
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs dtbo || true
 
-          # 3. Trigger build targets for dtbs
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs || true
-
-          # 4. Fallback: Directly compile any found .dts files using dtc if make dtbs didn't build them
+          # 3. Locate compiled .dtb files
           DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
 
+          # 4. Fallback: Directly build sdm429.dtb with GCC preprocessor if Kbuild skipped
           if [ -z "$DTB_FILES" ]; then
-            echo "Standard make dtbs returned no output. Compiling DTS files manually via DTC..."
-            DTS_FILES=$(find arch/arm64/boot/dts/ -name "*.dts" ! -name "*include*")
-            for dts in $DTS_FILES; do
-              dtb="${dts%.dts}.dtb"
-              dtc -I dts -O dtb -i arch/arm64/boot/dts/ -i arch/arm64/boot/dts/qcom/ -i arch/arm64/boot/dts/samsung/ "$dts" -o "$dtb" || true
-            done
+            echo "Pre-processing and compiling sdm429.dts manually..."
+            if [ -f "arch/arm64/boot/dts/qcom/sdm429.dts" ]; then
+              aarch64-linux-android-gcc -E -P -x assembler-with-cpp \
+                -I include/ -I arch/arm64/boot/dts/ -I arch/arm64/boot/dts/qcom/ \
+                arch/arm64/boot/dts/qcom/sdm429.dts -o arch/arm64/boot/dts/qcom/sdm429.dts.preprocessed
+
+              dtc -I dts -O dtb arch/arm64/boot/dts/qcom/sdm429.dts.preprocessed -o arch/arm64/boot/dts/qcom/sdm429.dtb || true
+            fi
             DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
           fi
 
-          # 5. Concatenate found DTB files to Image.gz
+          # 5. Append DTB to Image.gz
           if [ -n "$DTB_FILES" ]; then
             echo "Successfully generated DTB file(s):"
             echo "$DTB_FILES"
@@ -213,46 +93,31 @@ jobs:
             cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
             echo "Successfully generated arch/arm64/boot/Image.gz-dtb!"
           else
-            echo "CRITICAL ERROR: No .dtb files were produced. Checking if stock.dtb exists in repo..."
-            if [ -f "stock.dtb" ]; then
-              cat arch/arm64/boot/Image.gz stock.dtb > arch/arm64/boot/Image.gz-dtb
-              echo "Used stock.dtb fallback from repo root!"
-            else
-              echo "Failed to generate DTB and no stock.dtb found in repo root!"
-              exit 1
-            fi
+            echo "CRITICAL ERROR: No .dtb file was built!"
+            exit 1
           fi
 
-      - name: Package into AnyKernel3 Flashable ZIP
+      - name: Package with AnyKernel3
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           
-          # Copy concatenated kernel + DTB binary
+          # Move compiled kernel image to AnyKernel directory
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
 
           cd AnyKernel3
           
-          # Update strings & device settings
-          sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel with RTL88XXAU/g' anykernel.sh
-          sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
-          
-          # Configure Samsung SDM429/MSM8952 boot path, split_boot, and vbmeta patch
-          python3 -c '
-          with open("anykernel.sh", "r") as f:
-              content = f.read()
+          # Configure AnyKernel3 script properties
+          sed -i 's/kernel.string=.*/kernel.string=Custom Kernel with RTL88XXAU/' anykernel.sh
+          sed -i 's/do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i 's/block=.*/block=auto/' anykernel.sh
+          sed -i 's/is_slot_device=.*/is_slot_device=0/' anykernel.sh
 
-          content = content.replace("block=auto;", "block=/dev/block/bootdevice/by-name/boot;")
-          content = content.replace("is_slot_device=0;", "is_slot_device=0;\nsplit_boot=1;")
-          content = content.replace("PATCH_VBMETA_FLAG=auto;", "PATCH_VBMETA_FLAG=1;")
+          # Create flashable zip
+          zip -r9 ../Custom_Kernel_RTL88XXAU.zip * -x .git README.md *placeholder
 
-          with open("anykernel.sh", "w") as f:
-              f.write(content)
-          '
-
-          zip -r9 ../NetHunter-Kernel-RTL88XXAU.zip * -x .git README.md *placeholder
-
-      - name: Upload Flashable Kernel ZIP
-        uses: actions/upload-artifact@v4
+      - name: Upload Flashable ZIP Artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: NetHunter-Kernel-Flashable-ZIP
-          path: NetHunter-Kernel-RTL88XXAU.zip
+          name: Custom_Kernel_RTL88XXAU
+          path: Custom_Kernel_RTL88XXAU.zip
+          
