@@ -182,27 +182,28 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # Force system DTC compiler and build kernel + dtbs
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz dtbs
+          # 1. Compile Kernel Image & force DTB targets for MSM8952/Qualcomm family
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
+          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs || make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/ || true
 
-          # Locate all generated .dtb files across the build output paths
-          echo "Searching for compiled DTB files..."
+          # 2. Search for compiled DTB files across all output paths
+          echo "=== Locating compiled .dtb files ==="
           DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
 
           if [ -z "$DTB_FILES" ]; then
-            echo "No DTBs in arch/arm64/boot/dts/, searching full source tree..."
+            echo "Searching entire build output for DTBs..."
             DTB_FILES=$(find . -name "*.dtb" ! -path "./scripts/*" ! -path "./toolchain64/*" 2>/dev/null)
           fi
 
-          # Concatenate DTBs to Image.gz to produce Image.gz-dtb
+          # 3. Concatenate DTBs to Image.gz
           if [ -n "$DTB_FILES" ]; then
-            echo "Found DTB files:"
+            echo "Found the following DTB files:"
             echo "$DTB_FILES"
             
             cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
-            echo "Successfully generated arch/arm64/boot/Image.gz-dtb with appended DTBs!"
+            echo "Successfully generated Image.gz-dtb with appended DTB(s)!"
           else
-            echo "ERROR: Critical failure! No .dtb files were generated during the build."
+            echo "ERROR: Critical failure! No .dtb files were produced during compilation."
             exit 1
           fi
 
@@ -219,7 +220,7 @@ jobs:
           sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel with RTL88XXAU/g' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
           
-          # Configure Samsung SDM429 boot path, split_boot, and vbmeta patch
+          # Configure Samsung SDM429/MSM8952 boot path, split_boot, and vbmeta patch
           python3 -c '
           with open("anykernel.sh", "r") as f:
               content = f.read()
