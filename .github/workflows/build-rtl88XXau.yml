@@ -40,18 +40,18 @@ jobs:
           # Disable GCC version requirement check
           sed -i 's/# error Sorry, your version of GCC is too old - please use 5.1 or newer./\/\/ Disabled compiler check/g' include/linux/compiler-gcc.h || true
 
-          # Compile/Build DTC or force overwrite in-tree DTC with system DTC binary
+          # Build in-tree DTC directory structure and overwrite DTC with host binary
           make -j$(nproc) scripts/dtc/ || true
+          mkdir -p scripts/dtc/
           if command -v dtc >/dev/null 2>&1; then
-            mkdir -p scripts/dtc/
-            cp $(which dtc) scripts/dtc/dtc || true
+            cp -f $(which dtc) scripts/dtc/dtc || true
           fi
 
-          # Strip strict warning flags and invalid DTC options across all DTS Makefiles
+          # Strip problematic DTC options (-@ and -Werror) across all DTS Makefiles
           find arch/arm64/boot/dts/ -name "Makefile*" -exec sed -i 's/-Werror//g' {} + || true
           find arch/arm64/boot/dts/ -name "Makefile*" -exec sed -i 's/-@//g' {} + || true
 
-          # Patch scripts/Makefile.lib to prevent DTC warnings from halting the build
+          # Patch scripts/Makefile.lib to prevent DTC warnings/flags from stopping the build
           if [ -f "scripts/Makefile.lib" ]; then
             echo "Patching scripts/Makefile.lib for DTC..."
             sed -i 's/DTC_FLAGS += -Werror/DTC_FLAGS += -Wno-error/g' scripts/Makefile.lib || true
@@ -190,6 +190,11 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
+
+          # Ensure scripts/dtc/dtc remains system DTC before starting main build
+          if command -v dtc >/dev/null 2>&1; then
+            cp -f $(which dtc) scripts/dtc/dtc || true
+          fi
 
           # Compile Image.gz and DTBs
           make -j$(nproc) Image.gz dtbs
