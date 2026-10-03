@@ -1,4 +1,4 @@
-name: Build Kernel with RTL88XXAU
+name: Build Kernel with RTL88XXAU (AOSP Clang)
 
 on:
   workflow_dispatch:
@@ -17,10 +17,15 @@ jobs:
           sudo apt-get install -y build-essential bc libncurses5-dev libssl-dev \
             bison flex libelf-dev git ccache device-tree-compiler gcc-aarch64-linux-gnu
 
-      - name: Clone Toolchain
+      - name: Clone GCC Toolchain (For Binutils / Linker)
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git -b lineage-19.1 gcc64
           echo "$GITHUB_WORKSPACE/gcc64/bin" >> $GITHUB_PATH
+
+      - name: Clone AOSP Clang Toolchain
+        run: |
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git -b lineage-20.0 clang
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
 
       - name: Inject RTL88XXAU Driver
         run: |
@@ -39,10 +44,12 @@ jobs:
       - name: Configure Kernel
         run: |
           export ARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
           
           # Load Qualcomm SDM429 defconfig
-          make msm8937-perf_defconfig
+          make msm8937-perf_defconfig CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
 
           # Enable RTL88XXAU & USB Networking drivers
           echo "CONFIG_RTL88XXAU=y" >> .config
@@ -53,37 +60,38 @@ jobs:
           echo "CONFIG_CFG80211=y" >> .config
           echo "CONFIG_CFG80211_WEXT=y" >> .config
 
-          make olddefconfig
+          make olddefconfig CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
 
       - name: Compile Kernel & Target DTB/DTBOs
         run: |
           export ARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=aarch64-linux-android-
 
-          # 1. Compile Kernel Image
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
+          # 1. Compile Kernel Image with Clang
+          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
 
-          # 2. Build explicit overlay targets defined in your Makefile
+          # 2. Build explicit overlay targets defined in Makefile
           echo "=== Compiling SDM429 DTBO and Base DTBs ==="
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429-mtp-P81081-overlay.dtbo || true
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429.dtb || true
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sda429.dtb || true
-          make -j$(nproc) DTC=/usr/bin/dtc DTC_FLAGS="" dtbs dtbo || true
+          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429-mtp-P81081-overlay.dtbo || true
+          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429.dtb || true
+          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sda429.dtb || true
+          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" dtbs dtbo || true
 
           # 3. Search for generated .dtb files
           DTB_FILES=$(find arch/arm64/boot/dts/qcom/ -name "sdm429*.dtb" -o -name "sda429*.dtb" 2>/dev/null)
 
-          # Fallback: search all dtb files in dts tree if specific names aren't matched
           if [ -z "$DTB_FILES" ]; then
             DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
           fi
 
-          # 4. Fallback manual preprocessing with GCC if Kbuild skipped
+          # 4. Fallback manual preprocessing with Clang if Kbuild skipped
           if [ -z "$DTB_FILES" ]; then
             echo "Pre-processing and compiling sdm429.dts manually..."
             if [ -f "arch/arm64/boot/dts/qcom/sdm429.dts" ]; then
-              aarch64-linux-android-gcc -E -P -x assembler-with-cpp \
+              clang -E -P -x assembler-with-cpp \
                 -I include/ -I arch/arm64/boot/dts/ -I arch/arm64/boot/dts/qcom/ \
                 arch/arm64/boot/dts/qcom/sdm429.dts -o arch/arm64/boot/dts/qcom/sdm429.dts.preprocessed
 
