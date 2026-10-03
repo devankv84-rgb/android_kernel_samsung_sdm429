@@ -1,138 +1,136 @@
-name: Build Kernel with RTL88XXAU (AOSP Clang)
+name: Build NetHunter Kernel with RTL8821AU
 
 on:
   workflow_dispatch:
+    inputs:
+      KERNEL_REPO:
+        description: 'Stock Kernel Repository URL'
+        required: true
+        default: 'https://github.com/YOUR_USERNAME/YOUR_STOCK_KERNEL_REPO'
+      KERNEL_BRANCH:
+        description: 'Stock Kernel Branch'
+        required: true
+        default: 'lineage-22.2'
+      DRIVER_REPO:
+        description: 'RTL8821AU Driver Repository URL'
+        required: true
+        default: 'https://github.com/morrownr/8821au-20210708'
+      DEFCONFIG_NAME:
+        description: 'Device Defconfig Name (e.g., msm8937_sec_gtowifi_defconfig)'
+        required: true
+        default: 'msm8937_sec_gtowifi_defconfig'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Workflow
         uses: actions/checkout@v4
 
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc libncurses5-dev libssl-dev \
-            bison flex libelf-dev git ccache device-tree-compiler gcc-aarch64-linux-gnu
+          sudo apt-get install -y \
+            build-essential bison flex libncurses-dev libssl-dev \
+            libelf-dev git bc ccache zip unzip lzop lib32z1-dev \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Clone GCC Toolchain (For Binutils / Linker)
+      - name: Clone Repositories & Toolchain
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git -b lineage-19.1 gcc64
-          echo "$GITHUB_WORKSPACE/gcc64/bin" >> $GITHUB_PATH
+          mkdir -p workdir
+          cd workdir
 
-      - name: Clone AOSP Clang Toolchain
-        run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git -b lineage-20.0 clang
-          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+          # 1. Clone Stock Kernel
+          echo "Cloning Kernel Source..."
+          git clone --depth=1 -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.event.inputs.KERNEL_REPO }} kernel
 
-      - name: Inject RTL88XXAU Driver
+          # 2. Clone RTL8821AU Driver into Wireless Directory
+          echo "Cloning Driver Source..."
+          git clone --depth=1 ${{ github.event.inputs.DRIVER_REPO }} kernel/drivers/net/wireless/rtl8821au
+
+          # 3. Clone Toolchains
+          echo "Cloning Toolchains..."
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git toolchain32
+
+          # 4. Clone AnyKernel3 Template
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+
+      - name: Integrate Driver & Patch Configs
         run: |
-          git clone https://github.com/aircrack-ng/rtl8812au.git drivers/net/wireless/rtl88XXau
-          
-          # Add driver to Kconfig if missing
-          if ! grep -q "rtl88XXau" drivers/net/wireless/Kconfig; then
-            echo 'source "drivers/net/wireless/rtl88XXau/Kconfig"' >> drivers/net/wireless/Kconfig
+          cd workdir/kernel
+
+          # Link driver into Kernel Kconfig and Makefile
+          if ! grep -q "rtl8821au" drivers/net/wireless/Kconfig; then
+            echo 'source "drivers/net/wireless/rtl8821au/Kconfig"' >> drivers/net/wireless/Kconfig
           fi
           
-          # Add driver to Makefile if missing
-          if ! grep -q "rtl88XXau" drivers/net/wireless/Makefile; then
-            echo 'obj-$(CONFIG_RTL88XXAU) += rtl88XXau/' >> drivers/net/wireless/Makefile
+          if ! grep -q "rtl8821au" drivers/net/wireless/Makefile; then
+            echo 'obj-$(CONFIG_8821AU) += rtl8821au/' >> drivers/net/wireless/Makefile
           fi
 
-      - name: Configure Kernel
+          # Disable power saving / platform x86 overrides in driver Makefile if present
+          if [ -f drivers/net/wireless/rtl8821au/Makefile ]; then
+            sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/g' drivers/net/wireless/rtl8821au/Makefile
+            sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl8821au/Makefile
+          fi
+
+          # Append NetHunter and Driver flags to the target defconfig
+          DEFCONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.DEFCONFIG_NAME }}"
+          echo "" >> $DEFCONFIG_PATH
+          echo "# NetHunter Configurations" >> $DEFCONFIG_PATH
+          echo "CONFIG_CFG80211=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_CFG80211_WEXT=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_MAC80211=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_MAC80211_RC_MINSTREL=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_USB_GADGET=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_USB_CONFIGFS=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_USB_CONFIGFS_F_HID=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_USB_F_HID=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_MODULES=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_MODULE_UNLOAD=y" >> $DEFCONFIG_PATH
+          echo "CONFIG_8821AU=m" >> $DEFCONFIG_PATH
+
+      - name: Compile Kernel
         run: |
+          cd workdir/kernel
+
           export ARCH=arm64
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-android-
-          
-          # Load Qualcomm SDM429 defconfig
-          make msm8937-perf_defconfig CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
+          export SUBARCH=arm64
+          export CROSS_COMPILE=$(pwd)/../toolchain64/bin/aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=$(pwd)/../toolchain32/bin/arm-linux-androideabi-
 
-          # Enable RTL88XXAU & USB Networking drivers
-          echo "CONFIG_RTL88XXAU=y" >> .config
-          echo "CONFIG_RTL8821AU=y" >> .config
-          echo "EXTRA_CFLAGS += -DCONFIG_RTL8821A" >> .config
-          echo "CONFIG_USB_NET_DRIVERS=y" >> .config
-          echo "CONFIG_USB_USBNET=y" >> .config
-          echo "CONFIG_CFG80211=y" >> .config
-          echo "CONFIG_CFG80211_WEXT=y" >> .config
+          # Load patched defconfig and compile
+          make ${{ github.event.inputs.DEFCONFIG_NAME }}
+          make -j$(nproc)
 
-          make olddefconfig CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
-
-      - name: Compile Kernel & Target DTB/DTBOs
+      - name: Package AnyKernel3 Zip
         run: |
-          export ARCH=arm64
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=aarch64-linux-android-
+          cd workdir
 
-          # 1. Compile Kernel Image with Clang
-          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" Image.gz
-
-          # 2. Build explicit overlay targets defined in Makefile
-          echo "=== Compiling SDM429 DTBO and Base DTBs ==="
-          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429-mtp-P81081-overlay.dtbo || true
-          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sdm429.dtb || true
-          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" arch/arm64/boot/dts/qcom/sda429.dtb || true
-          make -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- DTC=/usr/bin/dtc DTC_FLAGS="" dtbs dtbo || true
-
-          # 3. Search for generated .dtb files
-          DTB_FILES=$(find arch/arm64/boot/dts/qcom/ -name "sdm429*.dtb" -o -name "sda429*.dtb" 2>/dev/null)
-
-          if [ -z "$DTB_FILES" ]; then
-            DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
+          # Locate kernel binary
+          if [ -f "kernel/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp kernel/arch/arm64/boot/Image.gz-dtb anykernel/
+          elif [ -f "kernel/arch/arm64/boot/Image.gz" ]; then
+            cp kernel/arch/arm64/boot/Image.gz anykernel/
+          elif [ -f "kernel/arch/arm64/boot/Image" ]; then
+            cp kernel/arch/arm64/boot/Image anykernel/
           fi
 
-          # 4. Fallback manual preprocessing with Clang if Kbuild skipped
-          if [ -z "$DTB_FILES" ]; then
-            echo "Pre-processing and compiling sdm429.dts manually..."
-            if [ -f "arch/arm64/boot/dts/qcom/sdm429.dts" ]; then
-              clang -E -P -x assembler-with-cpp \
-                -I include/ -I arch/arm64/boot/dts/ -I arch/arm64/boot/dts/qcom/ \
-                arch/arm64/boot/dts/qcom/sdm429.dts -o arch/arm64/boot/dts/qcom/sdm429.dts.preprocessed
+          # Copy built modules (.ko) into AnyKernel3 structure if created
+          mkdir -p anykernel/modules/system/lib/modules
+          find kernel/ -name "*.ko" -exec cp {} anykernel/modules/system/lib/modules/ \;
 
-              dtc -I dts -O dtb arch/arm64/boot/dts/qcom/sdm429.dts.preprocessed -o arch/arm64/boot/dts/qcom/sdm429.dtb || true
-            fi
-            DTB_FILES=$(find arch/arm64/boot/dts/ -name "*.dtb" 2>/dev/null)
-          fi
-
-          # 5. Append DTB to Image.gz
-          if [ -n "$DTB_FILES" ]; then
-            echo "Found matching DTB file(s):"
-            echo "$DTB_FILES"
-            
-            cat arch/arm64/boot/Image.gz $DTB_FILES > arch/arm64/boot/Image.gz-dtb
-            echo "Successfully created arch/arm64/boot/Image.gz-dtb!"
-          else
-            echo "CRITICAL ERROR: No .dtb file was built!"
-            exit 1
-          fi
-
-      - name: Package with AnyKernel3
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          # Configure anykernel.sh default properties
+          cd anykernel
+          sed -i 's/block=/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' anykernel.sh
           
-          # Move compiled Image.gz-dtb to AnyKernel directory
-          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+          # Create Flashable Zip
+          zip -r9 ../NetHunter-Kernel-RTL8821AU.zip * -x .git README.md NetHunter-Kernel-RTL8821AU.zip
 
-          cd AnyKernel3
-          
-          # Configure AnyKernel3 script properties
-          sed -i 's/kernel.string=.*/kernel.string=Custom Kernel with RTL88XXAU/' anykernel.sh
-          sed -i 's/do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
-          sed -i 's/block=.*/block=auto/' anykernel.sh
-          sed -i 's/is_slot_device=.*/is_slot_device=0/' anykernel.sh
-
-          # Zip package
-          zip -r9 ../Custom_Kernel_RTL88XXAU.zip * -x .git README.md *placeholder
-
-      - name: Upload Flashable ZIP Artifact
+      - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Custom_Kernel_RTL88XXAU
-          path: Custom_Kernel_RTL88XXAU.zip
-          
+          name: NetHunter-Kernel-RTL8821AU
+          path: workdir/NetHunter-Kernel-RTL8821AU.zip
