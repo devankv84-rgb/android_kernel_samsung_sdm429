@@ -1,14 +1,10 @@
-name: Build NetHunter Kernel with RTL8821AU
+name: Build NetHunter Kernel for Samsung Tab A 8.0 (SDM429)
 
 on:
   workflow_dispatch:
     inputs:
-      KERNEL_REPO:
-        description: 'Stock Kernel Repository URL'
-        required: true
-        default: 'https://github.com/YOUR_USERNAME/YOUR_STOCK_KERNEL_REPO'
       KERNEL_BRANCH:
-        description: 'Stock Kernel Branch'
+        description: 'LineageOS Kernel Branch'
         required: true
         default: 'lineage-22.2'
       DRIVER_REPO:
@@ -16,7 +12,7 @@ on:
         required: true
         default: 'https://github.com/morrownr/8821au-20210708'
       DEFCONFIG_NAME:
-        description: 'Device Defconfig Name (e.g., msm8937_sec_gtowifi_defconfig)'
+        description: 'Defconfig File'
         required: true
         default: 'msm8937_sec_gtowifi_defconfig'
 
@@ -25,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Workflow
+      - name: Checkout Workflow Repository
         uses: actions/checkout@v4
 
       - name: Install Build Dependencies
@@ -36,20 +32,20 @@ jobs:
             libelf-dev git bc ccache zip unzip lzop lib32z1-dev \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Clone Repositories & Toolchain
+      - name: Clone LineageOS Kernel & Tools
         run: |
           mkdir -p workdir
           cd workdir
 
-          # 1. Clone Stock Kernel
-          echo "Cloning Kernel Source..."
-          git clone --depth=1 -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.event.inputs.KERNEL_REPO }} kernel
+          # 1. Clone LineageOS SDM429 Kernel Source
+          echo "Cloning LineageOS SDM429 Kernel..."
+          git clone --depth=1 -b ${{ github.event.inputs.KERNEL_BRANCH }} https://github.com/LineageOS/android_kernel_samsung_sdm429.git kernel
 
           # 2. Clone RTL8821AU Driver into Wireless Directory
-          echo "Cloning Driver Source..."
+          echo "Cloning RTL8821AU Driver..."
           git clone --depth=1 ${{ github.event.inputs.DRIVER_REPO }} kernel/drivers/net/wireless/rtl8821au
 
-          # 3. Clone Toolchains
+          # 3. Clone LineageOS Prebuilt Toolchains
           echo "Cloning Toolchains..."
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git toolchain32
@@ -57,11 +53,11 @@ jobs:
           # 4. Clone AnyKernel3 Template
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
 
-      - name: Integrate Driver & Patch Configs
+      - name: Integrate Driver & NetHunter Configurations
         run: |
           cd workdir/kernel
 
-          # Link driver into Kernel Kconfig and Makefile
+          # Link driver into Wireless Kconfig and Makefile
           if ! grep -q "rtl8821au" drivers/net/wireless/Kconfig; then
             echo 'source "drivers/net/wireless/rtl8821au/Kconfig"' >> drivers/net/wireless/Kconfig
           fi
@@ -70,13 +66,13 @@ jobs:
             echo 'obj-$(CONFIG_8821AU) += rtl8821au/' >> drivers/net/wireless/Makefile
           fi
 
-          # Disable power saving / platform x86 overrides in driver Makefile if present
+          # Disable x86 platform and power saving overrides in driver Makefile
           if [ -f drivers/net/wireless/rtl8821au/Makefile ]; then
             sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/g' drivers/net/wireless/rtl8821au/Makefile
             sed -i 's/CONFIG_POWER_SAVING = y/CONFIG_POWER_SAVING = n/g' drivers/net/wireless/rtl8821au/Makefile
           fi
 
-          # Append NetHunter and Driver flags to the target defconfig
+          # Append NetHunter & Driver configurations to target defconfig
           DEFCONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.DEFCONFIG_NAME }}"
           echo "" >> $DEFCONFIG_PATH
           echo "# NetHunter Configurations" >> $DEFCONFIG_PATH
@@ -109,7 +105,7 @@ jobs:
         run: |
           cd workdir
 
-          # Locate kernel binary
+          # Copy built kernel image binary
           if [ -f "kernel/arch/arm64/boot/Image.gz-dtb" ]; then
             cp kernel/arch/arm64/boot/Image.gz-dtb anykernel/
           elif [ -f "kernel/arch/arm64/boot/Image.gz" ]; then
@@ -118,19 +114,19 @@ jobs:
             cp kernel/arch/arm64/boot/Image anykernel/
           fi
 
-          # Copy built modules (.ko) into AnyKernel3 structure if created
+          # Copy compiled driver modules (.ko) into AnyKernel3 module paths
           mkdir -p anykernel/modules/system/lib/modules
           find kernel/ -name "*.ko" -exec cp {} anykernel/modules/system/lib/modules/ \;
 
-          # Configure anykernel.sh default properties
+          # Configure anykernel.sh for SDM429 block devices
           cd anykernel
           sed -i 's/block=/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' anykernel.sh
           
           # Create Flashable Zip
-          zip -r9 ../NetHunter-Kernel-RTL8821AU.zip * -x .git README.md NetHunter-Kernel-RTL8821AU.zip
+          zip -r9 ../NetHunter-Kernel-SDM429.zip * -x .git README.md NetHunter-Kernel-SDM429.zip
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NetHunter-Kernel-RTL8821AU
-          path: workdir/NetHunter-Kernel-RTL8821AU.zip
+          name: NetHunter-Kernel-SDM429
+          path: workdir/NetHunter-Kernel-SDM429.zip
