@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - lineage-20
       - lineage*
       - main
       - master
@@ -16,8 +15,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          ref: lineage-20
 
       - name: Free Up Disk Space
         run: |
@@ -73,11 +70,19 @@ jobs:
           
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
 
+          # Disable VDSO to prevent modern host assembler compatibility errors
+          sed -i '/CONFIG_COMPAT_VDSO/d' arch/arm64/configs/gtowifi_eur_open_defconfig
+          sed -i '/CONFIG_VDSO/d' arch/arm64/configs/gtowifi_eur_open_defconfig
+          echo "# CONFIG_COMPAT_VDSO is not set" >> arch/arm64/configs/gtowifi_eur_open_defconfig
+          echo "# CONFIG_VDSO is not set" >> arch/arm64/configs/gtowifi_eur_open_defconfig
+
           mkdir -p out
           make O=out gtowifi_eur_open_defconfig
 
           make -j$(nproc) O=out \
             CC=clang \
+            AS=aarch64-linux-android-as \
+            LD=aarch64-linux-android-ld \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
