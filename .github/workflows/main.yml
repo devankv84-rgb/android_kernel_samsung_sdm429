@@ -74,11 +74,8 @@ jobs:
           
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
 
-          # Disable VDSO to prevent modern host assembler compatibility errors
-          sed -i '/CONFIG_COMPAT_VDSO/d' arch/arm64/configs/gtowifi_eur_open_defconfig
-          sed -i '/CONFIG_VDSO/d' arch/arm64/configs/gtowifi_eur_open_defconfig
-          echo "# CONFIG_COMPAT_VDSO is not set" >> arch/arm64/configs/gtowifi_eur_open_defconfig
-          echo "# CONFIG_VDSO is not set" >> arch/arm64/configs/gtowifi_eur_open_defconfig
+          # Bypass VDSO directory compilation in the kernel Makefile
+          sed -i '/subdir-y \+= vdso/s/^/#/' arch/arm64/kernel/Makefile
 
           mkdir -p out
           make O=out gtowifi_eur_open_defconfig
