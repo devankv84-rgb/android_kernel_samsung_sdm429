@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - lineage-20
       - lineage*
       - main
       - master
@@ -15,6 +16,9 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          repository: devankv84-rgb/android_kernel_samsung_sdm429
+          ref: lineage-20
 
       - name: Free Up Disk Space
         run: |
