@@ -1,0 +1,118 @@
+name: Compile LOS20 SDM429 Kernel & Package AnyKernel3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lineage-20
+      - lineage*
+      - main
+      - master
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: lineage-20
+
+      - name: Free Up Disk Space
+        run: |
+          echo "Freeing up disk space..."
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/dotnet
+          sudo rm -rf /opt/gh
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          df -h
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            libncurses5-dev \
+            git \
+            wget \
+            rsync \
+            python3 \
+            python-is-python3 \
+            zip
+
+      - name: Setup Toolchains
+        run: |
+          mkdir -p toolchain/clang toolchain/gcc64 toolchain/gcc32
+          
+          echo "Downloading Clang toolchain..."
+          wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android13-release/clang-r450784d.tar.gz" || \
+          wget -O clang.tar.gz "https://gitlab.com/ThankYouMario/android_prebuilts_clang_host_linux-x86_clang-r450784d/-/raw/main/clang-r450784d.tar.gz"
+          
+          tar -C toolchain/clang -xzf clang.tar.gz
+          rm clang.tar.gz
+
+          echo "Cloning GCC toolchains..."
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 toolchain/gcc64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 toolchain/gcc32
+
+      - name: Compile Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          
+          CLANG_BIN="$PWD/toolchain/clang/bin"
+          GCC64_BIN="$PWD/toolchain/gcc64/bin"
+          GCC32_BIN="$PWD/toolchain/gcc32/bin"
+          
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+
+          mkdir -p out
+          make O=out gtowifi_eur_open_defconfig
+
+          make -j$(nproc) O=out \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+      - name: Clone AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: osm0sis/AnyKernel3
+          path: AnyKernel3
+
+      - name: Prepare AnyKernel3 Package
+        run: |
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          if [ -f "out/arch/arm64/boot/dtbo.img" ]; then
+            cp out/arch/arm64/boot/dtbo.img AnyKernel3/
+          fi
+
+      - name: Configure AnyKernel3 Properties
+        run: |
+          cd AnyKernel3
+          sed -i 's/device.name1=.*/device.name1=gtowifi/g' anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=gtowifi_eur_open/g' anykernel.sh
+          sed -i 's/device.name3=.*/device.name3=SM-T290/g' anykernel.sh
+          sed -i 's/block.device=.*/block.device=\/dev\/block\/bootdevice\/by-name\/boot/g' anykernel.sh
+          sed -i 's/is_slot_device=.*/is_slot_device=0/g' anykernel.sh
+
+      - name: Build Flashable ZIP
+        run: |
+          cd AnyKernel3
+          rm -rf .git .github README.md
+          zip -r9 ../LOS20-SDM429-AnyKernel3.zip *
+
+      - name: Upload Flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: LOS20-SDM429-Flashable-Zip
+          path: LOS20-SDM429-AnyKernel3.zip
+          
